@@ -1,12 +1,11 @@
-_envops:
-  jinja2_extensions:
-    - jinja2.ext.do
-
 _templates_suffix: .jinja
+jinja_extensions:
+  - jinja2.ext.do
 
 _exclude:
   - .github/workflows/template-sync.yml
   - project.config.yaml
+  - copier.yml
   - "**/__pycache__/"
   - "**/*.pyc"
 
@@ -45,6 +44,7 @@ snyk_token:
 jira_project_key:
   type: str
   help: Jira project key (e.g., MYPROJ)
+  default: ""
 
 jira_site_url:
   type: str

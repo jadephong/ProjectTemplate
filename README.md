@@ -5,14 +5,23 @@
 ## 使用方式
 
 ```bash
-# 交互式创建（推荐）
-copier copy gh:jadephong/ProjectTemplate my-project
+# 1. 安装 Copier（一次性）
+pip install copier
 
-# 或使用预设配置文件
-copier copy --data-file project.config.yaml gh:jadephong/ProjectTemplate my-project
+# 2. 交互式创建项目（推荐）
+copier copy --trust gh:jadephong/ProjectTemplate my-project
 
-# 进入项目并初始化
+#    或使用预设配置文件
+copier copy --trust --data-file project.config.yaml gh:jadephong/ProjectTemplate my-project
+
+# 3. 配置 Secrets（在 .env 中填写 token）
 cd my-project
+cat > .env << 'EOF'
+SONARQUBE_TOKEN=your-sonarqube-token
+SNYK_TOKEN=your-snyk-token
+EOF
+
+# 4. 运行初始化脚本
 bash scripts/init.sh
 ```
 
@@ -21,6 +30,8 @@ bash scripts/init.sh
 2. 注入 GitHub Secrets
 3. 设置 main 分支保护规则
 4. 创建标准目录结构
+
+> `--trust` 参数授权 Copier 执行 `_tasks`（安装后提示），是必需的。
 
 ## 项目结构
 

@@ -18,8 +18,8 @@ jobs:
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@master
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SONAR_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+          GITHUB_TOKEN: {% raw %}${{ secrets.GITHUB_TOKEN }}{% endraw %}
+          SONAR_TOKEN: {% raw %}${{ secrets.SONARQUBE_TOKEN }}{% endraw %}
         with:
           args: >
             -Dsonar.projectKey={{ project_slug }}-key
@@ -34,7 +34,7 @@ jobs:
       - name: Run Snyk to check for vulnerabilities
         uses: snyk/actions/node@master
         env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          SNYK_TOKEN: {% raw %}${{ secrets.SNYK_TOKEN }}{% endraw %}
         with:
           args: --severity-threshold=high
 
@@ -46,8 +46,8 @@ jobs:
     steps:
       - name: Check scan results
         run: |
-          if [ "${{ needs.sonarcloud.result }}" != "success" ] || [ "${{ needs.snyk.result }}" != "success" ]; then
-            echo "❌ Code quality checks failed"
+          if [ "{% raw %}${{ needs.sonarcloud.result }}{% endraw %}" != "success" ] || [ "{% raw %}${{ needs.snyk.result }}{% endraw %}" != "success" ]; then
+            echo "Code quality checks failed"
             exit 1
           fi
-          echo "✅ All quality checks passed"
+          echo "All quality checks passed"

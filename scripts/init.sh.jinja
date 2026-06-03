@@ -6,23 +6,14 @@ echo "  ProjectTemplate - Post-init Setup"
 echo "============================================"
 echo ""
 
-ANSWERS_FILE="${1:-.copier-answers.yml}"
+# Values from Copier template (pre-filled, no need for .copier-answers.yml)
+PROJECT_SLUG="{{ project_slug }}"
+GITHUB_REPO_URL="{{ github_repo_url }}"
+SONARQUBE_HOST_URL="{{ sonarqube_host_url }}"
+PROJECT_NAME="{{ project_name }}"
 
-if [ ! -f "$ANSWERS_FILE" ]; then
-  echo "ERROR: $ANSWERS_FILE not found."
-  echo "Run 'copier copy gh:jadephong/ProjectTemplate .' first."
-  exit 1
-fi
-
-get_answer() {
-  grep -E "^$1:" "$ANSWERS_FILE" | cut -d':' -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
-}
-
-PROJECT_SLUG=$(get_answer project_slug)
-GITHUB_REPO_URL=$(get_answer github_repo_url)
-SONARQUBE_HOST_URL=$(get_answer sonarqube_host_url)
-
-echo "Project: $PROJECT_SLUG"
+echo "Project: $PROJECT_NAME"
+echo "Slug:    $PROJECT_SLUG"
 echo "Repo:    $GITHUB_REPO_URL"
 echo ""
 
@@ -31,11 +22,9 @@ echo ""
 read_secret() {
   local key=$1 prompt=$2
   local val
-  # Try .env first
   if [ -f ".env" ]; then
     val=$(grep -E "^$key=" .env 2>/dev/null | cut -d'=' -f2- | tr -d '\r' || true)
   fi
-  # Prompt if still empty
   if [ -z "$val" ]; then
     read -rsp "$prompt: " val
     echo ""
