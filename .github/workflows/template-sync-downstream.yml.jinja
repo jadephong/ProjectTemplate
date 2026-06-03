@@ -35,6 +35,9 @@ jobs:
         env:
           GH_TOKEN: {% raw %}${{ secrets.TEMPLATE_SYNC_TOKEN }}{% endraw %}
         run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+
           if git diff --quiet && git diff --cached --quiet; then
             echo "No changes, nothing to sync"
             gh issue close {% raw %}${{ github.event.issue.number }}{% endraw %} \
