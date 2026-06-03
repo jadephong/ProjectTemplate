@@ -20,7 +20,7 @@ dist/
 coverage/
 *.local
 
-# Dependencies
+# === Dependencies ===
 *.lock
 *.swp
 *.swo
