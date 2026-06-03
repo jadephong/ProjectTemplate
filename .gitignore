@@ -48,6 +48,6 @@ coverage/
 .opencode
 .superpowers
 
-# OS
+# === OS ===
 .DS_Store
 Thumbs.db
