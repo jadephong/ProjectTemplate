@@ -40,7 +40,7 @@ coverage/
 .springBeans
 .sts4-cache
 
-# AI
+# === AI ===
 .ao-output
 .agents
 .claude
