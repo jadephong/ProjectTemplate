@@ -1,0 +1,150 @@
+name: "Sprint Jira 同步"
+description: "审批后独立触发：Dry-run 预览（幂等查重）→ 用户确认 → 幂等创建/更新 Jira（先建 Epic、所有 Story 的 parent 设为该 Epic 实现 Epic 串联 Story；每个 Story 的完整 Tech Spec 写入 description 正文）→ 回读校验 → 产出 OpenCode 执行清单 → 决策落库 docs/adr/。这是唯一允许写 Jira 的工作流；sprint-plan-review.yaml 只产出本地产物，二者之间是审批硬边界。"
+
+# HARD RULES
+# - 所有面向用户 / Jira 的正文输出必须为中文
+# - dry-run 阶段严禁写 Jira；未收到用户明确“确认同步”前进入 jira_sync 视为 workflow 失败
+# - Story description 必须包含完整 Story 正文与 Tech Spec，禁止用附件或外链替代
+# - 结束前必须运行 scripts/validate-sprint-jira-sync-output.ps1
+
+agents_dir: "vendor/agency-agents-zh"
+
+llm:
+  provider: deepseek
+  model: deepseek-chat
+  max_tokens: 4096
+
+concurrency: 1
+
+inputs:
+  - name: sprint_name
+    description: "Sprint 标识，须与规划工作流一致（用作 Jira label / Sprint 归属 / 临时 ID 前缀）"
+    required: true
+  - name: jira_project
+    description: "目标 Jira 项目 Key（如 BP）"
+    required: true
+  - name: approved_plan
+    description: "已批准的待审批包 + 完整 Tech Spec（直接粘贴正文，或给出 .ao-output 下规划工作流产物的路径）"
+    required: true
+
+steps:
+  - id: jira_dryrun
+    role: "project-management/project-management-jira-workflow-steward"
+    task: |
+      前置条件：用户已对该计划明确批准。本步骤只做"预览"，绝不写入 Jira。
+
+      ## 已批准的计划（待审批包 + Tech Spec）
+      {{approved_plan}}
+
+      请生成「Jira 同步预案（Dry-run）」，目标项目 {{jira_project}}：
+      1. **幂等查重**：用可用的 Atlassian/Jira MCP 工具，按 label
+         `sprint:{{sprint_name}}` + 临时 ID（如 `S1-1`）在项目 {{jira_project}} 中搜索是否已存在对应条目。
+         对每个临时 ID 标注：🆕 将新建 / 🔄 已存在将更新（附现有 Issue Key）/ ⚠️ 疑似重复需人工判断。
+      2. **创建/更新清单**：
+         - 先列 **1 个 Epic**（本 Sprint，summary=「{{sprint_name}} — <Sprint 目标>」），ADR 摘要嵌入 Epic 正文。
+         - 再逐条列出每个 **Story**，**parent 指向该 Epic**（Epic 串联 Story；team-managed 项目用 `parent` 字段挂载）。
+         - 每条含：层级、summary、关键字段（估点写 Story Points 字段 / 优先级 / Sprint）、依赖链接。
+         - **Tech Spec 挂载方式固定为「写入 Story 的 description 正文全文」**——禁止用附件或外部链接
+           （OpenCode 经 task-development 的 read_ticket 从 Jira ticket 正文读取，附件/链接会取不到导致信息丢失）。
+      3. **风险提示**：会不会误建重复、会不会覆盖他人已改字段、依赖链接是否指向不存在的条目。
+      4. **统一打标约定**：所有条目都加 label `sprint:{{sprint_name}}` 和 `tmpid:<临时ID>`，
+         作为后续重跑的幂等键——本步骤须确认该约定可执行。
+
+      <HARD-GATE>
+      输出 Dry-run 预案后，必须停止并询问用户：
+      "以上为同步预案，确认后我才会真正写入 Jira。回复『确认同步』继续；
+       若有 ⚠️ 疑似重复或需调整的项，请先指示如何处理。"
+      在用户明确回复确认之前，禁止进入 jira_sync 步骤。
+      若任一 Jira MCP 工具不可用或鉴权失败，停止并告知用户需先连接 Atlassian。
+      </HARD-GATE>
+      本步骤本地产物与格式硬约束：
+      1. 必须落盘 `jira_dryrun.md` 与 `jira_sync_candidates.json`
+      2. 必须严格遵循模板 `vendor/workflows/templates/sprint-jira-sync/jira_dryrun.md`
+    output: sync_plan
+
+  - id: jira_sync
+    role: "project-management/project-management-jira-workflow-steward"
+    task: |
+      前置条件：用户已对 Dry-run 预案回复「确认同步」。若未确认，立即停止。
+
+      ## 已确认的同步预案
+      {{sync_plan}}
+
+      请按预案幂等写入 Jira 项目 {{jira_project}}：
+      1. **先建/复用 Epic**：按 label `sprint:{{sprint_name}}` 查是否已有本 Sprint 的 Epic；
+         无则创建 Epic（ADR 摘要嵌入 Epic 正文），有则复用其 Key。记下 Epic Key 供 Story 挂载。
+      2. **幂等执行 Story**：
+         - 🆕 标记的条目 → 创建；并打上 label `sprint:{{sprint_name}}` 与 `tmpid:<临时ID>`
+         - 🔄 标记的条目 → 更新现有 Issue（按 Issue Key），不得新建重复
+         - 严格按临时 ID ↔ label 匹配，避免重复创建
+         - **每个 Story 的 `parent` 设为上一步的 Epic Key（Epic 串联 Story）**
+      3. **字段写入**：summary、估点（写 Story Points 字段）、优先级，归入 Sprint「{{sprint_name}}」；
+         **description 必须包含该 Story 的完整内容：用户故事 + 验收标准 + Tech Spec 全文**，
+         一律写入 description 正文，**不得用附件或外部链接**（OpenCode 从 ticket 正文读，附件/链接会丢）。
+      4. **依赖链接**：按计划建立 blocks / is blocked by；若依赖的目标条目尚未创建，记录待补并最后回填。
+      5. **逐条记录结果**：Epic Key；每个 Story 的临时 ID ↔ 实际 Issue Key ↔ parent(Epic) ↔ 动作（created/updated/skipped）↔ 成功或失败原因。
+
+      只做写入与记录，校验留给下一步。任一条目失败不要中断，继续处理其余条目并如实记录失败项。
+    depends_on: [jira_dryrun]
+    output: sync_result
+
+  - id: sync_verify
+    role: "project-management/project-management-jira-workflow-steward"
+    task: |
+      你是同步校验员。"汇报成功"不等于"真的建好"——请回读 Jira 实际状态做核对。
+
+      ## 写入结果记录
+      {{sync_result}}
+
+      ## 原始已批准计划（核对基准）
+      {{approved_plan}}
+
+      请执行回读校验并输出报告：
+      1. **回读核对**：用 Jira MCP 按 Issue Key 逐条读回，核对以下与计划是否一致：
+         - Epic 是否存在；条目数量（计划 N 个 vs 实际存在 N 个）
+         - 每个 Story 的 **`parent` 是否指向本 Sprint 的 Epic**（Epic 串联 Story 是否成立）
+         - 关键字段：summary、估点（Story Points）、优先级、Sprint 归属、label
+         - **Tech Spec 全文是否在 description 正文内**（必须正文可读，**不接受附件/外部链接**——OpenCode 取不到即视为不合格）
+         - 依赖链接是否建立且指向有效条目
+      2. **差异 Diff**：列出所有不一致项（缺失/字段不符/链接断裂/Spec 未挂），标注严重程度。
+      3. **修复建议**：对每个差异给出补建/补字段/重链的具体动作；若有失败项，给出重试方案。
+      4. **最终映射表**：临时 ID ↔ 真实 Jira Issue Key（仅含校验通过的条目）。
+      5. **OpenCode 执行清单**（仅基于校验通过的条目）：按依赖拓扑排序，每条包含
+         - Jira Issue Key + 标题
+         - 对应 Tech Spec 的关键实现步骤摘要
+         - 完成定义（DoD）与测试要求
+         - 建议分支命名（含 Jira Key，便于追溯）
+      6. **同步总览**：created/updated/failed 计数、Jira 看板链接、是否全部校验通过。
+
+      <HARD-GATE>
+      若存在校验不通过的条目，必须明确标红并提示用户："以下条目未通过校验，
+      不应交给 OpenCode 执行"，OpenCode 执行清单只列校验通过的条目。
+      </HARD-GATE>
+      本步骤结束前必须通过 `scripts/validate-sprint-jira-sync-output.ps1`
+    depends_on: [jira_sync]
+    output: verify_report
+
+  - id: persist_decisions
+    role: "engineering/engineering-technical-writer"
+    task: |
+      把已批准的决策记录草案（ADR）落库到 `docs/adr/`，形成跨 Sprint 的决策记忆。
+
+      ## 已批准计划（含「决策记录草案（ADR）」一节）
+      {{approved_plan}}
+
+      ## Jira 同步映射（临时 ID ↔ 真实 Issue Key）
+      {{verify_report}}
+
+      执行：
+      1. **取草案**：从 approved_plan 的「决策记录草案」一节取出全部 ADR。若该节为空或无可记录决策，
+         输出"本 Sprint 无需新增 ADR"并结束，不要硬造。
+      2. **分配编号**：读 `docs/adr/` 现有文件，接续编号（如已有 ADR-0007 则从 ADR-0008 起）；
+         目录不存在则创建。文件名 `docs/adr/ADR-<编号>-<短横线标题>.md`。
+      3. **回填关联**：用同步映射把 ADR「关联」里的临时 ID 替换为真实 Jira Issue Key。
+      4. **置状态**：状态由"提议"改为 `Accepted`（已随 Sprint 批准），补当前日期。
+      5. **写入**：每条 ADR 落一个文件，内容含背景/决策/备选/影响/关联。
+      6. 输出：新增的 ADR 文件清单与标题。
+
+      只记非显然、有 tradeoff、影响后续的决策；可逆小决定不落库。
+    depends_on: [sync_verify]
+    output: adr_result

@@ -1,0 +1,110 @@
+#!/bin/bash
+set -euo pipefail
+
+echo "============================================"
+echo "  ProjectTemplate - Post-init Setup"
+echo "============================================"
+echo ""
+
+ANSWERS_FILE="${1:-.copier-answers.yml}"
+
+if [ ! -f "$ANSWERS_FILE" ]; then
+  echo "ERROR: $ANSWERS_FILE not found."
+  echo "Run 'copier copy gh:jadephong/ProjectTemplate .' first."
+  exit 1
+fi
+
+get_answer() {
+  grep -E "^$1:" "$ANSWERS_FILE" | cut -d':' -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+PROJECT_SLUG=$(get_answer project_slug)
+GITHUB_REPO_URL=$(get_answer github_repo_url)
+SONARQUBE_HOST_URL=$(get_answer sonarqube_host_url)
+
+echo "Project: $PROJECT_SLUG"
+echo "Repo:    $GITHUB_REPO_URL"
+echo ""
+
+# ── Secrets ──────────────────────────────────────────
+
+read_secret() {
+  local key=$1 prompt=$2
+  local val
+  # Try .env first
+  if [ -f ".env" ]; then
+    val=$(grep -E "^$key=" .env 2>/dev/null | cut -d'=' -f2- | tr -d '\r' || true)
+  fi
+  # Prompt if still empty
+  if [ -z "$val" ]; then
+    read -rsp "$prompt: " val
+    echo ""
+  fi
+  printf '%s' "$val"
+}
+
+echo "── Secrets ──"
+SONARQUBE_TOKEN=$(read_secret SONARQUBE_TOKEN "SonarQube token")
+SNYK_TOKEN=$(read_secret SNYK_TOKEN "Snyk token")
+echo ""
+
+# ── Inject GitHub secrets ────────────────────────────
+
+echo "── GitHub Secrets ──"
+
+REPO_OWNER=$(echo "$GITHUB_REPO_URL" | sed -E 's|https://github.com/||; s|/.*||')
+REPO_NAME=$(echo "$GITHUB_REPO_URL" | sed -E 's|https://github.com/[^/]+/||; s|\.git$||')
+
+inject_secret() {
+  local name=$1 value=$2
+  if [ -z "$value" ]; then
+    echo "  $name: skipped (empty)"
+    return
+  fi
+  if printf '%s' "$value" | gh secret set "$name" --repo "$REPO_OWNER/$REPO_NAME" 2>/dev/null; then
+    echo "  $name: injected"
+  else
+    echo "  $name: skipped (not a GitHub repo or insufficient permissions)"
+  fi
+}
+
+inject_secret SONARQUBE_TOKEN "$SONARQUBE_TOKEN"
+inject_secret SONAR_TOKEN "$SONARQUBE_TOKEN"
+inject_secret SNYK_TOKEN "$SNYK_TOKEN"
+echo ""
+
+# ── Branch Protection ────────────────────────────────
+
+echo "── Branch Protection ──"
+
+gh api "repos/$REPO_OWNER/$REPO_NAME/branches/main/protection" \
+  -X PUT \
+  -f required_status_checks='{"strict":true,"contexts":["SonarCloud Code Analysis","snyk/snyk-high-priority"]}' \
+  -f enforce_admins=true \
+  -f required_pull_request_reviews='{"required_approving_review_count":1}' \
+  -f restrictions=null \
+  -f allow_force_pushes=false \
+  -f allow_deletions=false \
+  2>/dev/null && echo "  main branch protected" || echo "  skipped (may already exist or need admin)"
+echo ""
+
+# ── Folder Structure ─────────────────────────────────
+
+echo "── Folders ──"
+mkdir -p src/{components,utils,lib}
+mkdir -p .claude/settings
+mkdir -p docs/{product-direction,retro,sprint}
+mkdir -p agents
+mkdir -p skills
+echo "  Created: src/ .claude/ docs/ agents/ skills/"
+echo ""
+
+echo "============================================"
+echo "  Setup complete!"
+echo ""
+echo "  Next steps:"
+echo "    1. Review .github/workflows/scan.yml"
+echo "    2. Fill docs/product-direction/VISION.md"
+echo "    3. Plan sprint: docs/sprint/SPRINT-1.md"
+echo "    4. git add . && git commit -m 'chore: init'"
+echo "============================================"

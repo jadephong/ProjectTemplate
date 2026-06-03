@@ -1,0 +1,64 @@
+_envops:
+  jinja2_extensions:
+    - jinja2.ext.do
+
+_templates_suffix: .jinja
+
+_exclude:
+  - .github/workflows/template-sync.yml
+  - project.config.yaml
+  - "**/__pycache__/"
+  - "**/*.pyc"
+
+project_name:
+  type: str
+  help: Project name (will be used for folder structure and Jira)
+  default: my-project
+
+project_slug:
+  type: str
+  help: Project slug (lowercase, no spaces)
+  default: "{{ project_name.lower().replace(' ', '-') }}"
+
+github_repo_url:
+  type: str
+  help: GitHub repository URL (e.g., https://github.com/jadephong/my-project)
+  default: https://github.com/jadephong/{{ project_slug }}
+
+sonarqube_token:
+  type: str
+  secret: true
+  help: SonarQube token for GitHub Actions
+  default: ""
+
+sonarqube_host_url:
+  type: str
+  help: SonarQube host URL
+  default: https://sonarqube.example.com
+
+snyk_token:
+  type: str
+  secret: true
+  help: Snyk API token
+  default: ""
+
+jira_project_key:
+  type: str
+  help: Jira project key (e.g., MYPROJ)
+
+jira_site_url:
+  type: str
+  help: Jira site URL
+  default: https://jadephong.atlassian.net
+
+team_members:
+  type: str
+  help: Comma-separated GitHub usernames of team members
+  default: ""
+
+_skip_if_exists:
+  - .git
+
+_tasks:
+  - command: 'echo "Project {{ project_name }} created."'
+  - command: 'echo "Run: cd {{ project_slug }} && bash scripts/init.sh"'

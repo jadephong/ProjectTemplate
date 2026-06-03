@@ -1,0 +1,16 @@
+# Sample answers file for copier copy --data-file
+# Copy, fill values, then: copier copy --data-file project.config.yaml gh:jadephong/ProjectTemplate my-project
+
+project_name: my-project
+
+github_repo_url: https://github.com/jadephong/my-project
+
+sonarqube_token: ""
+sonarqube_host_url: https://sonarqube.example.com
+
+snyk_token: ""
+
+jira_project_key: MYPROJ
+jira_site_url: https://jadephong.atlassian.net
+
+team_members: ""

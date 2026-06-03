@@ -1,0 +1,232 @@
+name: "OpenCode Task 返修"
+description: "OpenCode 按已存在 PR 的 review 阻塞项执行返修：切回 feature 分支 → 读 ticket → 只修 review_report 中的阻塞项 → 跑 dev 测试 + QA 自动化测试 + Verification → 单条 commit → 推送更新并停在『请重新review』。不新建 PR，不重复首轮建分支/开 PR 步骤。"
+
+# HARD RULES
+# - 所有面向用户 / Jira / GitHub 的正文输出必须为中文，除非 step 明确要求英文短字段
+# - 任何超出 ticket「Files to touch」的修改均视为 workflow 失败
+# - verify 未通过禁止进入 commit / push_update
+# - 只修 review_report 里的阻塞项，不顺手重构、不扩大改动范围
+# - 结束前必须运行 scripts/validate-task-development-output.ps1；validator 未通过不得宣称 workflow 完成
+# - 本 workflow 开始时必须把 Jira 流转到 Work In Progress，结束时必须流转到 Resolved
+
+agents_dir: "vendor/agency-agents-zh"
+
+llm:
+  provider: deepseek
+  model: deepseek-chat
+  max_tokens: 4096
+
+concurrency: 2
+
+inputs:
+  - name: jira_id
+    description: "本次返修对应的 Jira Task Key（如 EMT-50）"
+    required: true
+  - name: review_report
+    description: "PR 代码审查报告 / Jira 评论里的 [必修-阻塞] 清单"
+    required: true
+  - name: repo
+    description: "GitHub 仓库 owner/repo"
+    required: false
+    default: "jadephong/BasePortal"
+  - name: cloud_id
+    description: "Jira 站点"
+    required: false
+    default: "jadephong.atlassian.net"
+
+steps:
+  - id: resume_branch
+    role: "engineering/engineering-git-workflow-master"
+    task: |
+      为返修 Task {{jira_id}} 切回现有工作分支。
+
+      执行：
+      1. 确认工作区干净（无未提交改动），否则停止并提示先处理。
+      2. 切回 `feature/{{jira_id}}`。
+      3. `git pull --rebase origin feature/{{jira_id}}`，确保与远端 PR 分支对齐。
+      4. 输出当前分支名与最新 commit。
+
+      <HARD-GATE>返修只允许在已存在的 `feature/{{jira_id}}` 上进行，不得新建分支，不得切回 main 开首轮流程。</HARD-GATE>
+    output: branch_info
+
+  - id: read_ticket
+    role: "project-management/project-management-jira-workflow-steward"
+    task: |
+      用 Atlassian MCP `getJiraIssue`（cloudId={{cloud_id}}, issueIdOrKey={{jira_id}},
+      responseContentFormat=markdown）读取 Task {{jira_id}} 的完整 ticket body，提取并结构化输出：
+
+      1. **Summary**
+      2. **验收标准（AC）**
+      3. **Files to touch**
+      4. **Out of scope**
+      5. **Verification commands**
+      6. **其他实现约束 / Tech Spec 要点**
+
+      若 ticket 缺少 Files to touch / Verification commands 等关键字段，停止并提示用户补全 ticket。
+    depends_on: [resume_branch]
+    output: ticket
+
+  - id: implement_fix
+    role: "engineering/engineering-senior-developer"
+    task: |
+      按 review 阻塞项返修 Task {{jira_id}}。严格遵守 ticket 边界。
+
+      ## Ticket（含 AC / Files to touch / Out of scope）
+      {{ticket}}
+
+      ## Review 阻塞项
+      {{review_report}}
+
+      规则（违反任一条即失败）：
+      1. 只修改 ticket「Files to touch」中列出的路径。
+      2. 不实现「Out of scope」的任何内容。
+      3. 只针对 review_report 中的 [必修-阻塞] 逐条修复，不顺手重构、不扩大改动范围。
+      4. 每条阻塞项都要明确说明对应改动。
+      5. 实际修改文件清单必须与 ticket 的 Files to touch 对比；超出范围即失败。
+
+      输出：返修摘要（每条阻塞项改了什么、动了哪些文件、是否影响 AC）。
+    depends_on: [read_ticket]
+    output: impl_summary
+
+  - id: dev_test
+    role: "engineering/engineering-senior-developer"
+    task: |
+      为 Task {{jira_id}} 运行 / 补充 developer 测试。
+
+      ## 返修摘要
+      {{impl_summary}}
+
+      ## Ticket（AC 是测试基准）
+      {{ticket}}
+
+      要求：
+      1. 至少覆盖本次返修涉及的阻塞项与相关 AC。
+      2. 测试文件必须落在 ticket「Files to touch」允许的测试路径内。
+      3. 运行这些测试并输出真实结果。
+
+      输出：新增/修改的测试清单 + 运行结果。
+    depends_on: [implement_fix]
+    output: dev_test_result
+
+  - id: qa_automation
+    role: "testing/testing-api-tester"
+    task: |
+      为 Task {{jira_id}} 执行 QA 自动化测试。
+
+      ## 返修摘要
+      {{impl_summary}}
+
+      ## Ticket（AC）
+      {{ticket}}
+
+      要求：
+      1. 运行 / 扩充项目的 QA 自动化测试套件，至少覆盖本次返修触达的集成路径。
+      2. 输出真实结果（通过数/总数、失败明细）。
+
+      输出：QA 自动化测试结果。
+    depends_on: [implement_fix]
+    output: qa_test_result
+
+  - id: verify
+    role: "testing/testing-reality-checker"
+    task: |
+      运行 ticket 的 Verification commands 做最终把关。
+
+      ## Ticket（含 Verification commands）
+      {{ticket}}
+
+      ## Developer 测试结果
+      {{dev_test_result}}
+
+      ## QA 自动化测试结果
+      {{qa_test_result}}
+
+      执行：
+      1. 逐条运行 ticket 列出的 Verification commands，记录真实输出。
+      2. 核对 developer 测试与 QA 自动化测试是否都已运行且全绿。
+      3. 核对本次返修涉及的阻塞项是否已有测试支撑。
+
+      <HARD-GATE>
+      任一验证命令失败、或任一测试未通过、或阻塞项无测试支撑：
+      判定 ❌ 失败，停止在当前 Task 修复，禁止进入 commit。
+      全部通过才输出 ✅。
+      </HARD-GATE>
+
+      输出：逐条验证结果 + 最终 ✅/❌ 判定。
+
+      本步骤本地产物与格式硬约束：
+      1. 必须落盘 `.ao-output/task-{{jira_id}}/verify_result.md`
+      2. 必须严格遵循模板 `vendor/workflows/templates/task-development/verify_result.md`
+      3. 逐条记录 command / exit code / output 摘要 / 是否通过
+    depends_on: [dev_test, qa_automation]
+    output: verify_result
+
+  - id: commit
+    role: "engineering/engineering-git-workflow-master"
+    task: |
+      前置：verify 必须为 ✅。
+
+      ## 验证结果
+      {{verify_result}}
+
+      ## 返修摘要
+      {{impl_summary}}
+
+      ## Ticket
+      {{ticket}}
+
+      用一条 commit 提交本次返修：
+      1. 仅 stage 本 Task 相关、且在「Files to touch」范围内的文件。
+      2. commit message 格式：`{{jira_id}} Address review feedback`
+
+      输出：commit hash 与 message。
+    depends_on: [verify]
+    output: commit_info
+
+  - id: push_update
+    role: "engineering/engineering-git-workflow-master"
+    task: |
+      推送返修更新到已存在的 PR 分支，然后停止等待重新 review。
+
+      ## 提交信息
+      {{commit_info}}
+
+      ## 返修摘要
+      {{impl_summary}}
+
+      执行：
+      1. `git push --force-with-lease origin feature/{{jira_id}}`
+      2. 输出分支更新结果。
+
+      <HARD-GATE>
+      本工作流只推送已有 PR 的更新，不创建新 PR，不合并，不关闭 Jira。
+      输出提示："请重新review"。
+      </HARD-GATE>
+    depends_on: [commit]
+    output: push_result
+
+  - id: produce_result
+    role: "engineering/engineering-devops-automator"
+    task: |
+      记录返修结果，写入 fix-result.json 供 n8n 编排层读取。
+
+      ## 提交信息
+      {{commit_info}}
+
+      ## 推送结果
+      {{push_result}}
+
+      写入 `.ao-output/task-{{jira_id}}/fix-result.json`：
+      ```json
+      {
+        "status": "done",
+        "jira_id": "{{jira_id}}",
+        "commit_hash": "<从 commit_info 提取>",
+        "jira_transition_to": "Resolved",
+        "push_result": "<push_result 摘要>"
+      }
+      ```
+
+      输出：fix-result.json 路径。
+    depends_on: [push_update]
+    output: fix_result_json

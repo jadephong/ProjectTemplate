@@ -1,0 +1,269 @@
+name: "OpenCode 单 Task 开发协议"
+description: "OpenCode 执行单张 Jira Task 的标准首轮开发循环：从 main 切 feature 分支 → 读 ticket → 只改 Files to touch → 写 dev 测试 + QA 自动化测试 → 跑 Verification → 单条 commit → 建 PR 并停在『请review』。评审通过后由独立工作流 task-merge-close.yaml 完成合并/关单；评审打回后由 task-fix-review.yaml 处理返修。一次只做一张 Task。"
+
+# HARD RULES
+# - 所有面向用户 / Jira / GitHub 的正文输出必须为中文，除非 step 明确要求英文短字段
+# - 任何超出 ticket「Files to touch」的修改均视为 workflow 失败
+# - verify 未通过禁止进入 commit / open_pr
+# - PR 正文必须使用模板生成，不得自由撰写
+# - 结束前必须运行 scripts/validate-task-development-output.ps1；validator 未通过不得宣称 workflow 完成
+# - 本 workflow 开始时必须把 Jira 流转到 Work In Progress，结束时必须流转到 Resolved
+
+agents_dir: "vendor/agency-agents-zh"
+
+llm:
+  provider: deepseek
+  model: deepseek-chat
+  max_tokens: 4096
+
+concurrency: 2
+
+inputs:
+  - name: jira_id
+    description: "本次要做的单张 Jira Task Key（如 EMT-50）。一次只做一张。"
+    required: true
+  - name: repo
+    description: "GitHub 仓库 owner/repo"
+    required: false
+    default: "jadephong/BasePortal"
+  - name: cloud_id
+    description: "Jira 站点"
+    required: false
+    default: "jadephong.atlassian.net"
+steps:
+  - id: mark_in_progress
+    role: "project-management/project-management-jira-workflow-steward"
+    task: |
+      开始开发前，先用 Atlassian MCP（cloudId={{cloud_id}}, issueIdOrKey={{jira_id}}）把 Jira 流转到 `Work In Progress`。
+
+      输出：
+      - 是否已成功进入 `Work In Progress`
+      - Jira 最新状态
+    output: jira_status
+
+  - id: setup_branch
+    role: "engineering/engineering-git-workflow-master"
+    task: |
+      为单张 Task {{jira_id}} 准备隔离工作分支。一次只做这一张 Task。
+
+      执行：
+      1. 确认工作区干净（无未提交改动），否则停止并提示先处理。
+      2. `git checkout main && git pull` 确保 main 最新。
+      3. 分支：`feature/{{jira_id}}`
+         - 从 main 创建 `git checkout -b feature/{{jira_id}}`
+      4. 输出当前分支名与起点 commit。
+
+      <HARD-GATE>分支命名必须严格为 feature/{{jira_id}}，且必须从最新 main 派生。</HARD-GATE>
+    depends_on: [mark_in_progress]
+    output: branch_info
+
+  - id: read_ticket
+    role: "project-management/project-management-jira-workflow-steward"
+    task: |
+      用 Atlassian MCP `getJiraIssue`（cloudId={{cloud_id}}, issueIdOrKey={{jira_id}},
+      responseContentFormat=markdown）读取 Task {{jira_id}} 的完整 ticket body，提取并结构化输出：
+
+      1. **Summary**（用于后续 commit message 的英文动词短句来源）
+      2. **验收标准（AC）**：逐条列出
+      3. **Files to touch**：本 Task 允许修改的路径清单（**只能改这些**）
+      4. **Out of scope**：明确不实现的内容
+      5. **Verification commands**：完成后必须运行的验证命令
+      6. **其他实现约束 / Tech Spec 要点**
+
+      若 ticket 缺少 Files to touch / Verification commands 等关键字段，停止并提示用户补全 ticket，
+      不要靠猜测继续。
+    depends_on: [setup_branch]
+    output: ticket
+
+  - id: implement
+    role: "engineering/engineering-senior-developer"
+    task: |
+      实现 Task {{jira_id}}。严格遵守 ticket 边界。
+
+      ## Ticket（含 AC / Files to touch / Out of scope）
+      {{ticket}}
+
+      规则（违反任一条即失败）：
+      1. **只修改 ticket「Files to touch」中列出的路径**。需要动其他文件 → 停止并提示用户，
+         说明缺哪个路径，由用户决定是否扩 ticket 范围，不得擅自越界。
+      2. **不实现「Out of scope」**的任何内容。
+      3. 实现必须满足全部 AC。
+      4. 实际修改文件清单必须与 ticket 的 Files to touch 对比；超出范围即失败。
+
+      输出：改动摘要（动了哪些文件、做了什么、如何满足每条 AC）。
+    depends_on: [read_ticket]
+    output: impl_summary
+
+  - id: dev_test
+    role: "engineering/engineering-senior-developer"
+    task: |
+      为 Task {{jira_id}} 编写 developer 测试（强制，每张 Task 必须有）。
+
+      ## 实现摘要
+      {{impl_summary}}
+
+      ## Ticket（AC 是测试基准）
+      {{ticket}}
+
+      要求：
+      1. 编写 **unit / contract 测试**，覆盖本 Task 的每条验收标准与关键边界。
+      2. 测试文件应落在 ticket「Files to touch」允许的测试路径内。
+      3. 避免假绿：断言要具体，不过度 mock 掉被测逻辑。
+      4. 运行这些测试并输出真实结果（通过/失败明细）。
+
+      输出：新增/修改的测试清单 + 运行结果。
+    depends_on: [implement]
+    output: dev_test_result
+
+  - id: qa_automation
+    role: "testing/testing-api-tester"
+    task: |
+      为 Task {{jira_id}} 执行 QA agent 自动化测试（强制，每张 Task 必须有）。
+
+      ## 实现摘要
+      {{impl_summary}}
+
+      ## Ticket（AC）
+      {{ticket}}
+
+      要求：
+      1. 运行 / 扩充项目的 QA 自动化测试套件，覆盖本 Task 的端到端或集成路径。
+      2. 输出真实结果（如 33/33 PASSED 这类明确计数），失败项列出复现与定位。
+      3. 不要用"应该没问题"代替实际运行结果。
+
+      输出：QA 自动化测试结果（通过数/总数、失败明细）。
+    depends_on: [implement]
+    output: qa_test_result
+
+  - id: verify
+    role: "testing/testing-reality-checker"
+    task: |
+      运行 ticket 的 Verification commands 做最终把关。默认立场：未达标即打回，不放水。
+
+      ## Ticket（含 Verification commands）
+      {{ticket}}
+
+      ## Developer 测试结果
+      {{dev_test_result}}
+
+      ## QA 自动化测试结果
+      {{qa_test_result}}
+
+      执行：
+      1. 逐条运行 ticket 列出的 Verification commands，记录真实输出。
+      2. 核对 developer 测试与 QA 自动化测试是否都已运行且全绿。
+      3. 核对每条 AC 是否真有对应的通过测试支撑。
+
+      <HARD-GATE>
+      任一验证命令失败、或任一测试未通过、或有 AC 无测试支撑：
+      判定 ❌ 失败，**停在当前 Task**，明确列出失败项并要求回到 implement / dev_test / qa_automation 修复，
+      修复后重跑本步骤。**禁止进入 commit 步骤**。全部通过才输出 ✅。
+      </HARD-GATE>
+
+      输出：逐条验证结果 + 最终 ✅/❌ 判定 + 用于 Jira 评论的测试结果摘要。
+
+      本步骤本地产物与格式硬约束：
+      1. 必须落盘 `.ao-output/task-{{jira_id}}/verify_result.md`
+      2. 必须严格遵循模板 `vendor/workflows/templates/task-development/verify_result.md`
+      3. 逐条记录 command / exit code / output 摘要 / 是否通过
+    depends_on: [dev_test, qa_automation]
+    output: verify_result
+
+  - id: commit
+    role: "engineering/engineering-git-workflow-master"
+    task: |
+      前置：verify 必须为 ✅。若为 ❌，停止。
+
+      ## 验证结果
+      {{verify_result}}
+
+      ## 实现摘要
+      {{impl_summary}}
+
+      ## Ticket（取 Summary 作 commit 文案来源）
+      {{ticket}}
+
+      用**一条 commit** 提交本 Task 的全部改动：
+      1. 仅 stage 本 Task 相关、且在「Files to touch」范围内的文件。
+      2. commit message 格式：`{{jira_id}} <英文动词短句>`，动词短句由 Jira Summary 转写而来，
+         祈使句、动词开头（如 `EMT-50 Add tenant login rate limiting`）。
+      3. 一张 Task 一条 commit，不拆碎、不夹带无关改动。
+
+      输出：commit hash 与 message。
+    depends_on: [verify]
+    output: commit_info
+
+  - id: refresh_and_reverify
+    role: "engineering/engineering-git-workflow-master"
+    task: |
+      建 PR 前先把分支同步到最新 main 并重新验证——期间别的 Task 可能已合并进 main，
+      把跨 Task 冲突挡在合并前，而不是等 Sprint 整体验收时才暴露。
+
+      ## 提交信息
+      {{commit_info}}
+      ## Ticket（含 Verification commands）
+      {{ticket}}
+
+      执行：
+      1. `git fetch origin main`
+      2. `git rebase origin/main`（在 feature/{{jira_id}} 上）。
+      3. **重跑验证**：rebase 后重新运行 ticket 的 Verification commands + developer 测试 + QA 自动化测试，
+         确认与最新 main 集成后仍全绿。
+
+      <HARD-GATE>
+      - rebase 出现冲突：停在当前 Task 解决冲突，不得带冲突推送。
+      - 重验任一失败：停在当前 Task 修复（说明是否由 main 新变更引入），修复后重跑本步骤。
+      全部通过才输出 ✅ 与最新的测试结果摘要，进入 open_pr。
+      </HARD-GATE>
+
+      输出：rebase 结果（是否有冲突已解决）+ 重验结果 + 更新后的测试摘要。
+    depends_on: [commit]
+    output: refresh_result
+
+  - id: open_pr
+    role: "engineering/engineering-git-workflow-master"
+    task: |
+      推送分支并为 Task {{jira_id}} 创建 PR，然后停下等待人工 / Claude 评审。
+
+      ## 提交信息
+      {{commit_info}}
+      ## Rebase 与重验结果
+      {{refresh_result}}
+      ## 实现摘要
+      {{impl_summary}}
+      ## 验证结果
+      {{verify_result}}
+
+      执行：
+      1. 推送（已 rebase，用安全强推）：`git push --force-with-lease -u origin feature/{{jira_id}}`
+      2. `gh pr create --repo {{repo}} --base main --head feature/{{jira_id}}`，
+         标题 `{{jira_id}} <动词短句>`，正文含：改动摘要、Files touched、developer 测试结果、QA 自动化测试结果、关联 {{jira_id}}。
+      3. 输出 PR URL。
+
+      <HARD-GATE>
+      创建 PR 后**必须停止**，输出提示："请review"，并附上 PR URL 与 {{jira_id}}。
+      本工作流到此结束，**不执行合并 / Jira Done 流转**——这是评审与合并之间的硬边界。
+      评审通过后，由用户运行 task-merge-close.yaml 完成合并关单。
+      若评审打回：运行 task-fix-review.yaml 处理返修，不要重跑本工作流。
+      </HARD-GATE>
+
+      本步骤本地产物与格式硬约束：
+      1. PR 正文必须严格遵循模板 `vendor/workflows/templates/task-development/pr_body.md`
+      2. 本工作流结束前必须通过 `scripts/validate-task-development-output.ps1`
+    depends_on: [refresh_and_reverify]
+    output: pr_info
+
+  - id: mark_resolved
+    role: "project-management/project-management-jira-workflow-steward"
+    task: |
+      PR 创建完成后，用 Atlassian MCP（cloudId={{cloud_id}}, issueIdOrKey={{jira_id}}）把 Jira 流转到 `Resolved`。
+
+      ## PR 信息
+      {{pr_info}}
+
+      输出：
+      - 是否已成功进入 `Resolved`
+      - Jira 最新状态
+      - 对应 PR URL
+    depends_on: [open_pr]
+    output: resolved_status
