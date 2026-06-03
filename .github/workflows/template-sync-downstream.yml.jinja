@@ -23,7 +23,13 @@ jobs:
         run: pip install copier
 
       - name: Run copier update
-        run: copier update --defaults --trust
+        env:
+          TEMPLATE_SYNC_TOKEN: {% raw %}${{ secrets.TEMPLATE_SYNC_TOKEN }}{% endraw %}
+        run: |
+          if [ -n "${TEMPLATE_SYNC_TOKEN:-}" ]; then
+            git config --global url."https://x-access-token:${TEMPLATE_SYNC_TOKEN}@github.com/".insteadOf "https://github.com/"
+          fi
+          copier update --defaults --trust
 
       - name: Create PR
         env:
