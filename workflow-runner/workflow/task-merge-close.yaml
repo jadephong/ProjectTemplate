@@ -7,7 +7,7 @@ description: "评审通过后独立触发：合并前置门（确认 review pass
 # - merge 后必须回读验证 PR merged / Jira status / Jira comment 三项
 # - 结束前必须运行 scripts/validate-task-merge-close-output.ps1
 
-agents_dir: "vendor/agency-agents-zh"
+agents_dir: "agents/agency-agents-zh"
 
 llm:
   provider: deepseek

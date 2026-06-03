@@ -9,7 +9,7 @@ description: "OpenCode 实现单张 Task（一 Task 一 PR）后触发：开始�
 # - 结束前必须运行 scripts/validate-task-review-output.ps1；validator 未通过不得宣称 workflow 完成
 # - 本 workflow 只允许把 Jira 流转到 In Review / Reopened / Reviewed
 
-agents_dir: "vendor/agency-agents-zh"
+agents_dir: "agents/agency-agents-zh"
 
 llm:
   provider: deepseek

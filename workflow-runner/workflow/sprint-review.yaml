@@ -7,7 +7,7 @@ description: "整个 Sprint 的 Task 全部合并后触发：盘点全部 Story 
 # - acceptance_report 必须保留模板标题和维度表格
 # - 结束前必须运行 scripts/validate-sprint-review-output.ps1
 
-agents_dir: "vendor/agency-agents-zh"
+agents_dir: "agents/agency-agents-zh"
 
 llm:
   provider: deepseek

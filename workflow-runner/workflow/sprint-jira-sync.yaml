@@ -7,7 +7,7 @@ description: "审批后独立触发：Dry-run 预览（幂等查重）→ 用户
 # - Story description 必须包含完整 Story 正文与 Tech Spec，禁止用附件或外链替代
 # - 结束前必须运行 scripts/validate-sprint-jira-sync-output.ps1
 
-agents_dir: "vendor/agency-agents-zh"
+agents_dir: "agents/agency-agents-zh"
 
 llm:
   provider: deepseek

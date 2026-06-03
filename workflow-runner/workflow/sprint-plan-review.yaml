@@ -7,7 +7,7 @@ description: "grill-me 需求对齐 → Scrum 拆 Sprint 任务 → 逐 Story �
 # - 本工作流严禁任何 Jira / Atlassian 写操作；一旦写入即视为 workflow 失败
 # - 结束前必须运行 scripts/validate-sprint-plan-review-output.ps1
 
-agents_dir: "vendor/agency-agents-zh"
+agents_dir: "agents/agency-agents-zh"
 
 llm:
   provider: deepseek

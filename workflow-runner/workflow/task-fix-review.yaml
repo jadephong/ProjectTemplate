@@ -9,7 +9,7 @@ description: "OpenCode 按已存在 PR 的 review 阻塞项执行返修：切回
 # - 结束前必须运行 scripts/validate-task-development-output.ps1；validator 未通过不得宣称 workflow 完成
 # - 本 workflow 开始时必须把 Jira 流转到 Work In Progress，结束时必须流转到 Resolved
 
-agents_dir: "vendor/agency-agents-zh"
+agents_dir: "agents/agency-agents-zh"
 
 llm:
   provider: deepseek
