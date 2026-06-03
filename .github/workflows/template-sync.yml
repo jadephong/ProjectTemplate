@@ -1,0 +1,77 @@
+name: Template Sync Notifier
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  notify-sync:
+    name: Notify downstream repos for template sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get template version
+        id: version
+        run: |
+          VERSION=$(git describe --tags --always --abbrev=7)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Changed files:"
+          git diff HEAD~1..HEAD --name-only || echo "First commit"
+
+      - name: Find downstream repos with topic
+        id: repos
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Query all repos with jadep-template topic
+          REPOS=$(gh repo list --topic jadep-template --json nameWithOwner --jq '.[].nameWithOwner')
+          echo "repos=$REPOS" >> $GITHUB_OUTPUT
+          echo "Found repos:"
+          echo "$REPOS"
+
+      - name: Open sync issues in downstream repos
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          REPOS="${{ steps.repos.outputs.repos }}"
+
+          while IFS= read -r repo; do
+            if [ -z "$repo" ]; then continue; fi
+
+            echo "Opening issue in $repo..."
+
+            CHANGED_FILES=$(git diff HEAD~1..HEAD --name-only | paste -sd ',' - || echo "See template commit $VERSION")
+
+            ISSUE_TITLE="chore: sync template $VERSION"
+            ISSUE_BODY="Template has been updated. Please review and run \`copier update\` to sync changes.
+
+## Changed Files
+$CHANGED_FILES
+
+## Steps to Sync
+1. Review the changes: \`copier diff\`
+2. Apply updates: \`copier update\`
+3. Resolve any conflicts in your codebase
+4. Commit and push
+5. Close this issue
+
+Template commit: $VERSION
+Repository: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+
+            # Check if issue already exists
+            EXISTING=$(gh issue list --repo "$repo" --search "$ISSUE_TITLE" --state open --json number --jq '.[0].number' || echo "")
+
+            if [ -z "$EXISTING" ]; then
+              gh issue create --repo "$repo" --title "$ISSUE_TITLE" --body "$ISSUE_BODY" || echo "⚠️  Could not create issue (repo may have different owner or permissions)"
+            else
+              echo "Issue #$EXISTING already exists, skipping"
+            fi
+          done <<< "$REPOS"
+
+      - name: Summary
+        run: |
+          echo "✅ Template sync notifications sent"
+          echo "Template version: ${{ steps.version.outputs.version }}"

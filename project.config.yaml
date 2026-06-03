@@ -1,0 +1,23 @@
+# Project Template Configuration
+# Fill in this file before running ./scripts/init.sh
+
+# Project details
+project_name: my-project
+project_slug: my-project
+
+# GitHub
+github_repo_url: https://github.com/jadephong/my-project
+
+# SonarQube
+sonarqube_host_url: https://sonarqube.example.com
+sonarqube_token: "" # Will prompt if not provided
+
+# Snyk
+snyk_token: "" # Will prompt if not provided
+
+# Jira
+jira_project_key: MYPROJ
+jira_site_url: https://jadephong.atlassian.net
+
+# Team
+team_members: "" # Comma-separated GitHub usernames, optional
