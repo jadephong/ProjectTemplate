@@ -46,26 +46,18 @@ jobs:
             CHANGED_FILES=$(git diff HEAD~1..HEAD --name-only | paste -sd ',' - || echo "See template commit $VERSION")
 
             ISSUE_TITLE="chore: sync template $VERSION"
-            ISSUE_BODY="Template has been updated. Please review and run \`copier update\` to sync changes.
-
-## Changed Files
-$CHANGED_FILES
-
-## Steps to Sync
-1. Review the changes: \`copier diff\`
-2. Apply updates: \`copier update\`
-3. Resolve any conflicts in your codebase
-4. Commit and push
-5. Close this issue
-
-Template commit: $VERSION
-Repository: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+            ISSUE_BODY=$(printf 'Template has been updated. Please run `copier update` to sync.\n\n## Changed Files\n%s\n\n## Steps\n1. Review: `copier diff`\n2. Apply: `copier update`\n3. Commit and push\n\nTemplate: %s\nRepository: %s/%s/commit/%s' \
+              "$CHANGED_FILES" \
+              "$VERSION" \
+              "${{ github.server_url }}" \
+              "${{ github.repository }}" \
+              "${{ github.sha }}")
 
             # Check if issue already exists
             EXISTING=$(gh issue list --repo "$repo" --search "$ISSUE_TITLE" --state open --json number --jq '.[0].number' || echo "")
 
             if [ -z "$EXISTING" ]; then
-              gh issue create --repo "$repo" --title "$ISSUE_TITLE" --body "$ISSUE_BODY" || echo "⚠️  Could not create issue (repo may have different owner or permissions)"
+              gh issue create --repo "$repo" --title "$ISSUE_TITLE" --body "$ISSUE_BODY" || echo "Could not create issue"
             else
               echo "Issue #$EXISTING already exists, skipping"
             fi
