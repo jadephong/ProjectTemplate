@@ -25,10 +25,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN }}
         run: |
-          REPOS=$(gh search repos "topic:jadep-template user:jadephong" --json fullName --jq '.[].fullName')
+          REPOS=$(gh search repos "topic:jadep-template user:jadephong" --jq '[.[].fullName] | join(" ")')
           echo "repos=$REPOS" >> $GITHUB_OUTPUT
-          echo "Found repos:"
-          echo "$REPOS"
+          echo "Found repos: $REPOS"
 
       - name: Open sync issues in downstream repos
         env:
@@ -37,9 +36,7 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           REPOS="${{ steps.repos.outputs.repos }}"
 
-          while IFS= read -r repo; do
-            if [ -z "$repo" ]; then continue; fi
-
+          for repo in $REPOS; do
             echo "Opening issue in $repo..."
 
             CHANGED_FILES=$(git diff HEAD~1..HEAD --name-only | paste -sd ',' - || echo "See template commit $VERSION")
@@ -52,7 +49,6 @@ jobs:
               "${{ github.repository }}" \
               "${{ github.sha }}")
 
-            # Check if issue already exists
             EXISTING=$(gh issue list --repo "$repo" --search "$ISSUE_TITLE" --state open --json number --jq '.[0].number' || echo "")
 
             if [ -z "$EXISTING" ]; then
@@ -60,7 +56,7 @@ jobs:
             else
               echo "Issue #$EXISTING already exists, skipping"
             fi
-          done <<< "$REPOS"
+          done
 
       - name: Summary
         run: |
