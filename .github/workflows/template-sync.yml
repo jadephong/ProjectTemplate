@@ -23,17 +23,16 @@ jobs:
       - name: Find downstream repos with topic
         id: repos
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN }}
         run: |
-          # Query all repos with jadep-template topic
-          REPOS=$(gh repo list --topic jadep-template --json nameWithOwner --jq '.[].nameWithOwner')
+          REPOS=$(gh search repos "topic:jadep-template user:jadephong" --json nameWithOwner --jq '.[].nameWithOwner')
           echo "repos=$REPOS" >> $GITHUB_OUTPUT
           echo "Found repos:"
           echo "$REPOS"
 
       - name: Open sync issues in downstream repos
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           REPOS="${{ steps.repos.outputs.repos }}"
