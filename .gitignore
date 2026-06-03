@@ -1,27 +1,53 @@
-# Environment
+# === Secrets / env ===
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+*.key
+secrets/
+
+# === Build artifacts ===
+target/
+build/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+.kotlin
+
+# === Node / Frontend ===
+node_modules/
+dist/
+.vite/
+coverage/
+*.local
 
 # Dependencies
-node_modules/
 *.lock
 *.swp
 *.swo
 *~
 
-# IDE
-.vscode/
+# === IDE ===
 .idea/
-*.swc
-*.swo
-*~.nib
+*.iws
+*.iml
+*.ipr
+.vscode/
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+# AI
+.ao-output
+.agents
+.claude
+.codex
+.opencode
+.superpowers
 
 # OS
 .DS_Store
 Thumbs.db
-
-# Project specific
-.claude/worktrees/
-dist/
-build/
