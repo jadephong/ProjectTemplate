@@ -1,0 +1,98 @@
+name: "Sprint 整体验收 deep"
+description: "Sprint 全部 Task 合并后触发：盘点全部 Story + 合并 PR（落文件）→ 完成度+集成接缝评审 → 全量回归核验 → 综合验收判定并写回 Jira。看整体而非单点，区别于按单 PR 的 task-review-lite。"
+
+# HARD RULES
+# - 面向用户 / Jira 正文一律中文
+# - 各阶段报告独立落 .ao-output 文件，不得合并成聊天总结
+# - acceptance_report 保留模板标题与维度表格
+# - 结束前跑 scripts/validate-sprint-review-output.ps1
+
+agents_dir: "agents/agency-agents-zh"
+
+llm:
+  provider: deepseek
+  model: deepseek-chat
+  max_tokens: 3072
+
+concurrency: 1
+
+inputs:
+  - name: sprint_name
+    description: "要验收的 Sprint 标识，须与规划/同步一致"
+    required: true
+  - name: run_dir
+    description: "本次运行产物根目录，所有输出基于此"
+    required: false
+    default: ".ao-output/{{sprint_name}}"
+  - name: jira_project
+    description: "Jira 项目 Key"
+    required: true
+  - name: sprint_goal
+    description: "本 Sprint 目标（验收基准）"
+    required: true
+  - name: repo
+    description: "GitHub 仓库 owner/repo"
+    required: false
+    default: "jadephong/BasePortal"
+  - name: cloud_id
+    description: "Jira 站点"
+    required: false
+    default: "jadephong.atlassian.net"
+
+steps:
+  - id: collect_sprint
+    role: "engineering/engineering-devops-automator"
+    task: |
+      盘点全部交付物，落文件不凭印象。
+      1. **Jira**：`searchJiraIssuesUsingJql`（cloudId={{cloud_id}}）按 `project = {{jira_project}} AND labels = "sprint:{{sprint_name}}"`
+         拉全部 Task：Key、Summary、状态、是否 Resolved、估点。
+      2. **GitHub**：`gh pr list --repo {{repo}} --state merged --search "{{jira_project}}"` 匹配 `feature/<JiraKey>` 已合并 PR：PR 号、对应 Key、合并 commit。
+      3. **关联核对**：每个 Task ↔ 是否有合并 PR；标 ⚠️ Done 无 PR / 有 PR 未 Resolve / 混入本 Sprint 外的 PR。
+      4. **变更范围**：本 Sprint 在 main 的累计 commit 范围 / 改动文件概览。
+      写 `{{run_dir}}/inventory.json`。
+      输出只返回：inventory_path + Task 数 + 合并 PR 数。
+    output: inventory_ref
+
+  - id: completion_and_integration
+    role: "engineering/engineering-backend-architect"
+    task: |
+      合并原 completion_audit + integration_review。读 `{{run_dir}}/inventory.json`，
+      必要时用 gh 查相关 PR diff / 在 main 核对。Sprint 目标（基准）：{{sprint_goal}}。
+
+      **完成度**：目标逐项拆解 → 由哪些 Task 支撑 → 是否闭环；Story ✅/🔁/⚠️（状态与代码不一致）；
+      范围变化（加塞/砍/挪 + 原因）；carryover（未完成项挪下个 Sprint）；估点燃尽（计划 vs 实际偏差）。
+      **集成接缝**：跨 Task 接口契约一致性、数据模型协同（同表多 Task 改动冲突/重复迁移）、集成点真连通、
+      重复实现/命名分裂/配置漂移、本 Sprint 引入的架构债。
+      每条标 🔴 阻塞验收 / 🟡 跟进 / ✅，给定位与建议。写 `{{run_dir}}/completion-integration.md`。
+      输出只返回：报告路径 + 🔴 阻塞项数。
+    depends_on: [collect_sprint]
+    output: ci_ref
+
+  - id: regression_check
+    role: "testing/testing-reality-checker"
+    task: |
+      全量回归核验。读 inventory.json。默认立场：未达标即不通过。
+      1. 在最新 main 跑完整测试套件（unit + 集成 + QA 自动化），输出真实计数。
+      2. 回归排查：后期改动是否破坏早期 Task / 既有功能；失败项定位到引入 Task。
+      3. AC 总览：全部 Story AC 是否都有通过测试支撑，列未覆盖项。
+      4. 构建/部署：能否干净构建、关键启动路径正常。
+      写 `{{run_dir}}/regression.md`，结论 ✅ 全绿 / ❌ 有回归或缺口。
+      输出只返回：报告路径 + ✅/❌。
+    depends_on: [collect_sprint]
+    output: regression_ref
+
+  - id: sprint_acceptance
+    role: "project-management/project-manager-senior"
+    task: |
+      综合判定并写回 Jira。读 completion-integration.md 与 regression.md。
+      写 `{{run_dir}}/acceptance_report.md`（遵循模板 `templates/sprint-review/acceptance_report.md`）：
+      ### 验收判定：[✅ 验收通过 / ⚠️ 有条件通过 / ❌ 不通过]（任一 🔴 集成阻塞或 ❌ 回归 → 不通过/有条件，说明放行条件）
+      ### 目标达成总结（一段话 + 关键证据）
+      ### 验收维度概览 | 维度 | 结论 | 关键发现 |（完成度/目标、跨 Task 集成、全量回归）
+      ### 阻塞项 ### 遗留项 carryover（挪下个 Sprint）### 跟进/技术债清单（建议下个 sprint-plan-review-deep 立项）
+
+      用 Atlassian MCP（cloudId={{cloud_id}}）把报告摘要写回 Jira（本 Sprint Epic 评论或代表条目评论）：判定/目标达成/阻塞项/carryover。
+      最后跑 `scripts/validate-sprint-review-output.ps1`。
+      输出：acceptance_report 路径 + 验收判定 + Jira 写回位置链接 + validator 结果。
+    depends_on: [completion_and_integration, regression_check]
+    output: acceptance_report

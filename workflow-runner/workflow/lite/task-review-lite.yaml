@@ -1,0 +1,163 @@
+name: "Task 评审 lite"
+description: "OpenCode 一 Task 一 PR 后触发：Jira 转 In Review → 收集上下文落文件 → 单次评审（DoD 门 + Large PR 升级 + AC/Spec/逻辑/测试/性能，diff 只读一次）→ 回写 GitHub/Jira → validator。安全由 Snyk weekly scan 覆盖，代码异味/复杂度由 SonarQube 覆盖，本工作流不重复。"
+
+# HARD RULES
+# - 面向用户 / Jira / GitHub 正文一律中文
+# - final_review 遵循模板，禁止改写为 prose
+# - review-result.json 是结果唯一结构化来源，必须写出
+# - 大产物落 .ao-output 文件，step 间只传路径
+
+agents_dir: "agents/agency-agents-zh"
+
+llm:
+  provider: deepseek
+  model: deepseek-chat
+  max_tokens: 2048
+
+concurrency: 1
+
+inputs:
+  - name: story_key
+    description: "本次评审的 Jira Task Issue Key（如 EMT-54）"
+    required: true
+  - name: pr_url
+    description: "对应 GitHub PR URL，分支约定 feature/<story_key>"
+    required: true
+  - name: repo
+    description: "GitHub 仓库 owner/repo"
+    required: false
+    default: "jadephong/BasePortal"
+  - name: cloud_id
+    description: "Jira 站点"
+    required: false
+    default: "jadephong.atlassian.net"
+  - name: sonar_project_key
+    description: "SonarQube 项目 Key（拉 Quality Gate）"
+    required: true
+  - name: review_round
+    description: "当前评审轮次"
+    required: false
+    default: "1"
+  - name: max_rounds
+    description: "最多返修轮次，超过则升级人工"
+    required: false
+    default: "10"
+  - name: context_mode
+    description: "full = 全量 diff；incremental = 只看 last_reviewed_sha..HEAD"
+    required: false
+    default: "full"
+  - name: last_reviewed_sha
+    description: "增量基线 SHA，incremental 时必传"
+    required: false
+    default: ""
+  - name: jira_content
+    description: "Jira description（ADF JSON 字符串，n8n 预取）；非空则跳过内部 getJiraIssue"
+    required: false
+    default: ""
+
+steps:
+  - id: mark_in_review
+    role: "project-management/project-management-jira-workflow-steward"
+    task: |
+      用 Atlassian MCP（cloudId={{cloud_id}}, issueIdOrKey={{story_key}}）把 Jira 流转到 `In Review`。
+      输出：最终状态（一行）。
+    output: jira_status
+
+  - id: gather_context
+    role: "engineering/engineering-devops-automator"
+    task: |
+      汇集评审数据，大件全部落文件，不内联正文。
+      1. **PR 元数据**：`gh pr view <编号> --repo {{repo}} --json number,title,body,state,additions,deletions,changedFiles,headRefName,baseRefName`（编号取 pr_url 末段）。
+      2. **diff 落文件**：incremental 且 {{last_reviewed_sha}} 非空 → `gh pr diff <编号> --repo {{repo}} --base {{last_reviewed_sha}}`；
+         否则 `gh pr diff <编号> --repo {{repo}}`。写 `.ao-output/review-{{story_key}}/diff.patch`。
+      3. **Jira 验收基准**：{{jira_content}} 非空 → 解析 ADF JSON（递归取 type=text 的 text 拼接）；
+         否则 `getJiraIssue`（cloudId={{cloud_id}}, issueIdOrKey={{story_key}}, responseContentFormat=markdown）。只取 AC / Tech Spec 要点。
+      4. **SonarQube Gate**：`GET /api/qualitygates/project_status?projectKey={{sonar_project_key}}&branch=feature/{{story_key}}`，
+         记 overall（OK/WARN/ERROR）+ 失败条件。
+
+      全部写入 `.ao-output/review-{{story_key}}/review-context.json`，字段：
+      pr_metadata、branch_check、ac_spec_points、dod_evidence（PR 自报 test/lint/build 结果原文）、
+      sonar_gate、diff_stats、changed_files、risk_classification（性能敏感面逐项是/否+命中点；规模 small/medium/large）、diff_path、context_mode。
+
+      输出只返回：review_context_path、diff_path、sonar_gate_status、diff_scale。禁止输出 diff 正文与长 markdown。
+      若 gh / Jira MCP / SonarQube 不可用，停止并提示。
+    depends_on: [mark_in_review]
+    output: context_ref
+
+  - id: review_once
+    role: "engineering/engineering-code-reviewer"
+    task: |
+      唯一评审步（合并原 dod_gate / security / perf / summary / produce_result）。
+      读 `.ao-output/review-{{story_key}}/review-context.json`。
+
+      ## Token 规则
+      不回贴 diff 原文；不总结未变更文件；不重复 SonarQube 已覆盖的异味/重复/复杂度；只报影响 PR 是否通过的问题。
+
+      ## 0. DoD 门（只看 context.json，不读 diff）
+      核验：测试真实全绿？lint/build/typecheck 干净？sonar_gate=OK？每条 AC 有实现+测试证据？变更聚焦本 Task？
+      DoD 不过 → 判 `🔁 打回`，只列缺项，**不读 diff**，跳到第 3 步写产物结束。
+
+      ## 1. Large PR 门
+      diff_scale=large → 判 `⛔ 升级`（原因：PR 过大无法保证评审质量，建议拆分），**不读 diff**，跳到第 3 步。
+
+      ## 2. 深审（仅 DoD 通过且规模可控时，读 diff.patch 一次）
+      对照 AC/Spec 检查：AC 逐条满足、Spec 偏离、逻辑正确性（边界/错误/潜在 bug）、测试质量（真覆盖/假绿）、
+      性能敏感面（命中才查：N+1/重复 I/O、并发竞态、资源未释放、热路径低效；否则写"跳过深审"）、范围（无关改动/漏做）。
+      每条标 🔴/🟡/✅ + 改法。判定：任一 🔴 或 🟡 → 🔁 打回；无 → ✅ 通过；{{review_round}} ≥ {{max_rounds}} 仍未过 → ⛔ 升级。
+
+      ## 3. 写产物（两个文件，判定一致）
+      `mkdir -p .ao-output/review-{{story_key}}`。
+      写 `.ao-output/review-{{story_key}}/final_review-round{{review_round}}.md`（遵循模板 `templates/task-review/final_review.md`）：
+      ```
+      ### 判定：[✅ 通过 / 🔁 打回 / ⛔ 升级]
+      ### 评审覆盖
+      | 维度 | 是否深审 | 结论 | 关键发现 |
+      |------|---------|------|---------|
+      | DoD | 是 | | |
+      | 基线（AC/逻辑/Spec） | 是/跳过 | | |
+      | SonarQube Quality Gate | 自动 | | |
+      | 性能 | 是/跳过 | | |
+      ### 必须修改（🔴 Blocking）
+      无 / 1. [维度] 问题 → 定位 → 改法
+      ### 建议改进（🟡 Non-blocking）
+      ### 亮点
+      ```
+      写 `.ao-output/review-{{story_key}}/review-result.json`：
+      ```json
+      {
+        "status": "pass|fail|escalate",
+        "review_round": {{review_round}},
+        "story_key": "{{story_key}}",
+        "pr_url": "{{pr_url}}",
+        "blocking_findings": [{"id":"B1","description":"..."}],
+        "non_blocking_findings": [{"id":"N1","description":"..."}],
+        "github_comment_body": "<final_review md 完整内容>",
+        "jira_transition_to": "Reviewed|Reopened"
+      }
+      ```
+      映射：✅→pass/Reviewed；🔁→fail/Reopened；⛔→escalate/Reopened。
+      blocking_findings 取「必须修改（🔴）」各条；non_blocking_findings 取「建议改进（🟡）」各条
+      （🟡 也会导致 fail，返修需结构化读取这两组）；无则各为空数组。
+      输出只返回：result_json_path + status。
+    depends_on: [gather_context]
+    output: review_ref
+
+  - id: write_back
+    role: "engineering/engineering-devops-automator"
+    task: |
+      确定性回写（读 result.json，不做评审判断）。
+      读 `.ao-output/review-{{story_key}}/review-result.json`：
+      1. **GitHub**：`gh pr comment <编号> --repo {{repo}} --body-file` 发布 github_comment_body 到 {{pr_url}}（编号取 pr_url 末段）。
+      2. **Jira**：用 Atlassian MCP（cloudId={{cloud_id}}）把 {{story_key}} 流转到 json.jira_transition_to（Reviewed / Reopened），
+         并加一条最小中文回链评论，遵循模板 `templates/task-review/write_back.md`
+         （评审轮次 {{review_round}}/{{max_rounds}}、评审结论、GitHub Review Comment 链接）。
+      输出：GitHub 评论链接 + Jira 新状态。
+    depends_on: [review_once]
+    output: writeback_result
+
+  - id: validate_output
+    role: "engineering/engineering-devops-automator"
+    task: |
+      执行 `scripts/validate-task-review-output.ps1`，未通过则 workflow 失败并报原因。
+    depends_on: [write_back]
+    output: validation_result

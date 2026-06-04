@@ -1,0 +1,122 @@
+name: "Task 返修 lite"
+description: "按已存在 PR 的 review 阻塞项返修：切回 feature 分支 → 读返修上下文（ticket + 阻塞项）→ 只修阻塞项 → 测试+验证一次过 → 单条 commit → 推送更新 → 写 fix-result.json（Jira 流转由 n8n 依 jira_transition_to 执行）。不新建 PR，不重复首轮建分支。"
+
+# HARD RULES
+# - 面向用户 / Jira / GitHub 正文一律中文，英文短字段除外
+# - 任何超出 ticket「Files to touch」的修改即失败
+# - 只修 review-result.json 的 blocking_findings / non_blocking_findings，不顺手重构、不扩大范围
+# - test_and_verify 未全绿禁止 commit / push
+# - 大产物落 .ao-output 文件，step 间只传路径
+
+agents_dir: "agents/agency-agents-zh"
+
+llm:
+  provider: deepseek
+  model: deepseek-chat
+  max_tokens: 2048
+
+concurrency: 1
+
+inputs:
+  - name: jira_id
+    description: "本次返修的 Jira Task Key（如 EMT-50）"
+    required: true
+  - name: review_result_path
+    description: "上轮 task-review-lite 产出的 review-result.json 路径（含阻塞项）"
+    required: false
+    default: ".ao-output/review-{{jira_id}}/review-result.json"
+  - name: repo
+    description: "GitHub 仓库 owner/repo"
+    required: false
+    default: "jadephong/BasePortal"
+  - name: cloud_id
+    description: "Jira 站点"
+    required: false
+    default: "jadephong.atlassian.net"
+
+steps:
+  - id: resume_branch
+    role: "engineering/engineering-git-workflow-master"
+    task: |
+      切回返修分支：
+      1. 工作区干净检查，否则停止提示。
+      2. 切回 `feature/{{jira_id}}`，`git pull --rebase origin feature/{{jira_id}}` 与远端 PR 分支对齐。
+      <HARD-GATE>只允许在已存在的 `feature/{{jira_id}}` 上返修，不得新建分支、不得切回 main。</HARD-GATE>
+      输出：分支名 + 最新 commit。
+    output: branch_info
+
+  - id: read_fix_context
+    role: "project-management/project-management-jira-workflow-steward"
+    task: |
+      汇总返修上下文落文件：
+      1. 读 `getJiraIssue`（cloudId={{cloud_id}}, issueIdOrKey={{jira_id}}, responseContentFormat=markdown），
+         提取 summary、acceptance_criteria[]、files_to_touch[]、out_of_scope[]、verification_commands[]。
+      2. 从 `{{review_result_path}}` 读取 blocking_findings[] 与 non_blocking_findings[]（🟡 也导致 fail，两组都要修）。
+      合并写入 `.ao-output/task-{{jira_id}}/fix-context.json`。
+      <HARD-GATE>缺 files_to_touch / verification_commands → 停止并提示补全 ticket。</HARD-GATE>
+      输出只返回：fix_context_path + 阻塞项条数 + 建议项条数。
+    depends_on: [resume_branch]
+    output: ctx_ref
+
+  - id: implement_fix
+    role: "engineering/engineering-senior-developer"
+    task: |
+      读 `.ao-output/task-{{jira_id}}/fix-context.json` 返修。
+      规则（违反即失败）：
+      1. 只改 files_to_touch 列出的路径；不实现 out_of_scope。
+      2. 逐条修 blocking_findings 与 non_blocking_findings 两组，不顺手重构、不扩大范围。
+      3. 每条 finding 说明对应改动。
+      返修摘要写 `.ao-output/task-{{jira_id}}/impl-summary.md`。
+      输出只返回：impl_summary_path + 实际改动文件清单。
+    depends_on: [read_fix_context]
+    output: impl_ref
+
+  - id: test_and_verify
+    role: "engineering/engineering-senior-developer"
+    task: |
+      一步完成测试与验证。读 fix-context.json 与 impl-summary.md。
+      1. 补充 / 运行测试，至少覆盖本次返修的阻塞项与相关 AC。
+      2. 逐条运行 verification_commands，记录真实输出。
+      3. 核对阻塞项已有测试支撑。
+      结果写 `.ao-output/task-{{jira_id}}/verify_result.md`（模板 `templates/task-development/verify_result.md`）。
+      <HARD-GATE>任一命令失败 / 测试未过 / 阻塞项无测试支撑 → ❌，停在本步修复，禁止 commit。</HARD-GATE>
+      输出只返回：verify_result_path + ✅/❌。
+    depends_on: [implement_fix]
+    output: verify_ref
+
+  - id: commit
+    role: "engineering/engineering-git-workflow-master"
+    task: |
+      前置：verify_ref 必须 ✅。
+      仅 stage files_to_touch 范围内的返修改动，一条 commit：`{{jira_id}} Address review feedback`。
+      输出：commit hash + message。
+    depends_on: [test_and_verify]
+    output: commit_info
+
+  - id: push_update
+    role: "engineering/engineering-git-workflow-master"
+    task: |
+      推送返修更新到已有 PR 分支：`git push --force-with-lease origin feature/{{jira_id}}`。
+      <HARD-GATE>只推送更新，不建新 PR、不合并。</HARD-GATE>
+      输出：推送结果。
+    depends_on: [commit]
+    output: push_result
+
+  - id: produce_result
+    role: "engineering/engineering-devops-automator"
+    task: |
+      写 `.ao-output/task-{{jira_id}}/fix-result.json`（n8n 据此流转 Jira 与触发重新 review）：
+      ```json
+      {
+        "status": "done",
+        "jira_id": "{{jira_id}}",
+        "commit_hash": "<从 commit_info 取>",
+        "jira_transition_to": "Resolved",
+        "push_result": "<push_result 摘要>",
+        "next_action": "re-review"
+      }
+      ```
+      最后跑 `scripts/validate-task-development-output.ps1`，未通过则报失败。
+      输出：fix-result.json 路径。
+    depends_on: [push_update]
+    output: fix_result_ref

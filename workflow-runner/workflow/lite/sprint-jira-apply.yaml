@@ -1,0 +1,100 @@
+name: "Sprint Jira 同步 — Apply"
+description: "唯一允许写 Jira 的工作流。仅当 confirm_sync=true 才执行：确认门（确定性脚本，非 true 即 exit 1 中断）→ 按 dry-run 候选幂等写入（建 Epic、Story parent 指向 Epic、Tech Spec 全文入 description）→ 回读校验。ADR 落库已拆到独立的 sprint-adr-persist.yaml，本工作流只管 Jira 写入与 verify。"
+
+# HARD RULES
+# - 面向用户 / Jira 正文一律中文
+# - confirm_sync != true 时 confirm_gate 必须 exit 1 硬失败，后续步骤不得运行
+# - Story description 必须含完整 Story 正文 + Tech Spec 全文，禁止附件/外链
+# - 结束前跑 scripts/validate-sprint-jira-sync-output.ps1
+
+agents_dir: "agents/agency-agents-zh"
+
+llm:
+  provider: deepseek
+  model: deepseek-chat
+  max_tokens: 2048
+
+concurrency: 1
+
+inputs:
+  - name: sprint_name
+    description: "Sprint 标识，须与 dry-run 一致"
+    required: true
+  - name: run_dir
+    description: "本次运行产物根目录（须与 dry-run 一致），所有输出基于此"
+    required: false
+    default: ".ao-output/{{sprint_name}}"
+  - name: jira_project
+    description: "目标 Jira 项目 Key"
+    required: true
+  - name: candidates_json_path
+    description: "sprint-jira-dryrun 产出的 jira_sync_candidates.json 路径"
+    required: true
+  - name: approved_plan_path
+    description: "审批包目录（取 Story 正文 + Tech Spec）"
+    required: true
+  - name: confirm_sync
+    description: "人工确认开关。必须显式传 true 才会写入 Jira；否则 confirm_gate 步骤 exit 1 硬失败"
+    required: true
+    default: "false"
+  - name: cloud_id
+    description: "Jira 站点"
+    required: false
+    default: "jadephong.atlassian.net"
+
+steps:
+  - id: confirm_gate
+    role: "engineering/engineering-devops-automator"
+    task: |
+      确认门（确定性脚本，不调 LLM 判断）。逐字执行以下 PowerShell，并以其退出码作为本步骤结果：
+
+      ```powershell
+      $confirm = "{{confirm_sync}}".Trim().ToLower()
+      if ($confirm -ne "true") {
+        Write-Error "未确认同步（confirm_sync='{{confirm_sync}}' != true），不做任何 Jira 写入。"
+        exit 1
+      }
+      $candidates = "{{candidates_json_path}}"
+      if (-not (Test-Path $candidates)) {
+        Write-Error "候选文件不存在：$candidates"
+        exit 1
+      }
+      try { Get-Content $candidates -Raw | ConvertFrom-Json | Out-Null }
+      catch { Write-Error "候选文件无法解析为 JSON：$candidates"; exit 1 }
+      Write-Output "confirm=pass; candidates 文件已校验"
+      exit 0
+      ```
+
+      <HARD-GATE>脚本 exit 1 即本步骤失败，workflow 必须中断，jira_apply 不得运行。只有 exit 0 才放行。</HARD-GATE>
+      输出：脚本 stdout（confirm=pass + 提示）。
+    output: confirm_result
+
+  - id: jira_apply
+    role: "project-management/project-management-jira-workflow-steward"
+    task: |
+      前置：confirm_gate 已 exit 0，否则本步骤不应被触发。读 {{candidates_json_path}} 与 {{approved_plan_path}} 下 stories/*.md。
+      按候选幂等写入项目 {{jira_project}}：
+      1. **Epic**：按 label `sprint:{{sprint_name}}` 查，无则建（ADR 摘要嵌正文），有则复用，记 Epic Key。
+      2. **Story**：🆕 创建并打 label `sprint:{{sprint_name}}` + `tmpid:<临时ID>`；🔄 按 Issue Key 更新不新建；
+         每个 Story `parent` 设为 Epic Key；description 写入**完整 Story 正文 + Tech Spec 全文**（禁附件/外链）；
+         字段：summary、Story Points、优先级、Sprint。
+      3. **依赖链接**：建 blocks / is blocked by；目标未建则记待补最后回填。
+      任一条目失败不中断，继续其余并如实记录。结果写 `{{run_dir}}/jira_apply_result.json`
+      （每条：tmpid ↔ Issue Key ↔ parent ↔ action created/updated/skipped/failed ↔ 原因）。
+      输出只返回：apply_result_path + Epic Key + created/updated/failed 计数。
+    depends_on: [confirm_gate]
+    output: apply_result
+
+  - id: sync_verify
+    role: "project-management/project-management-jira-workflow-steward"
+    task: |
+      回读校验（"汇报成功"≠"真的建好"）。读 jira_apply_result.json 与 {{approved_plan_path}}。
+      按 Issue Key 逐条读回核对：Epic 存在；条目数；每个 Story parent 指向本 Sprint Epic；
+      关键字段（summary/Story Points/优先级/Sprint/label）；**Tech Spec 全文在 description 正文内**（附件/外链即不合格）；依赖链接有效。
+      写 `{{run_dir}}/sync_verify.json`：差异 diff（缺失/字段不符/链接断/Spec 未挂 + 严重程度）、
+      修复建议、最终映射表（临时 ID ↔ 真实 Issue Key，仅校验通过项）、OpenCode 执行清单（按依赖拓扑，仅通过项：Issue Key + 标题 + DoD + 建议分支名）。
+      最后跑 `scripts/validate-sprint-jira-sync-output.ps1`。
+      <HARD-GATE>校验不通过的条目标红并提示"不应交给 OpenCode 执行"；执行清单只列通过项。</HARD-GATE>
+      输出只返回：sync_verify_path + 是否全部通过 + 看板链接 + 一句"ADR 落库请运行 sprint-adr-persist.yaml"。
+    depends_on: [jira_apply]
+    output: verify_report

@@ -1,0 +1,45 @@
+name: "Sprint ADR 落库"
+description: "Jira sync 完成后独立触发：把已批准的 ADR 草案落库到 docs/adr/，用 sync_verify 的真实 Issue Key 回填关联，状态置 Accepted。与 Jira 写入解耦——sprint-jira-apply 只管 Jira，本工作流只管 ADR。"
+
+# HARD RULES
+# - 面向用户正文一律中文
+# - 只记非显然、有 tradeoff、影响后续的决策；可逆小决定不落库
+# - 不写 Jira（只读 sync_verify 映射），只写 docs/adr/
+
+agents_dir: "agents/agency-agents-zh"
+
+llm:
+  provider: deepseek
+  model: deepseek-chat
+  max_tokens: 2048
+
+concurrency: 1
+
+inputs:
+  - name: sprint_name
+    description: "Sprint 标识，须与规划/同步一致"
+    required: true
+  - name: run_dir
+    description: "本次运行产物根目录，须与规划/同步一致"
+    required: false
+    default: ".ao-output/{{sprint_name}}"
+  - name: approved_plan_path
+    description: "审批包目录（取「决策记录草案（ADR）」一节）"
+    required: true
+  - name: sync_verify_path
+    description: "sprint-jira-apply 产出的 sync_verify.json 路径（提供临时 ID ↔ 真实 Issue Key 映射）"
+    required: false
+    default: "{{run_dir}}/sync_verify.json"
+
+steps:
+  - id: persist_decisions
+    role: "engineering/engineering-technical-writer"
+    task: |
+      ADR 落库 docs/adr/。
+      1. 从 {{approved_plan_path}} 的审批包取 ADR 草案；为空或无可记录决策 → 输出"本 Sprint 无需新增 ADR"并结束，不硬造。
+      2. 读 docs/adr/ 现有文件接续编号（目录不存在则建），文件名 `docs/adr/ADR-<编号>-<短横线标题>.md`。
+      3. 若 {{sync_verify_path}} 文件存在，读其最终映射表，把 ADR「关联」里临时 ID 替换为真实 Issue Key；不存在则保留临时 ID 并标注"待回填"。
+      4. 状态由"提议"改 `Accepted`，补当前日期。
+      5. 每条 ADR 一个文件（背景/决策/备选/影响/关联）。
+      输出：新增 ADR 文件清单与标题。
+    output: adr_result

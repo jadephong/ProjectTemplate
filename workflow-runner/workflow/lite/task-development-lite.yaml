@@ -1,0 +1,131 @@
+name: "Task 开发 lite"
+description: "OpenCode 执行单张 Jira Task 的标准开发循环：切分支 → 读 ticket → 实现 → 测试+验证一次过 → 单条 commit → rebase+建 PR → Jira 转 Resolved。一次只做一张 Task。评审走 task-review-lite，返修走 task-fix-review-lite，合并走 task-merge-close。"
+
+# HARD RULES
+# - 面向用户 / Jira / GitHub 正文一律中文，commit / 分支名等英文短字段除外
+# - 任何超出 ticket「Files to touch」的修改即 workflow 失败
+# - test_and_verify 未全绿禁止 commit / open_pr
+# - 大产物落 .ao-output 文件，step 间只传路径
+
+agents_dir: "agents/agency-agents-zh"
+
+llm:
+  provider: deepseek
+  model: deepseek-chat
+  max_tokens: 2048
+
+concurrency: 1
+
+inputs:
+  - name: jira_id
+    description: "本次要做的单张 Jira Task Key（如 EMT-50）"
+    required: true
+  - name: repo
+    description: "GitHub 仓库 owner/repo"
+    required: false
+    default: "jadephong/BasePortal"
+  - name: cloud_id
+    description: "Jira 站点"
+    required: false
+    default: "jadephong.atlassian.net"
+
+steps:
+  - id: mark_in_progress
+    role: "project-management/project-management-jira-workflow-steward"
+    task: |
+      用 Atlassian MCP（cloudId={{cloud_id}}, issueIdOrKey={{jira_id}}）把 Jira 流转到 `Work In Progress`。
+      输出：最终状态（一行）。
+    output: jira_status
+
+  - id: setup_branch
+    role: "engineering/engineering-git-workflow-master"
+    task: |
+      为单张 Task {{jira_id}} 准备隔离分支（**幂等，支持重跑**）：
+      1. 确认工作区干净，否则停止并提示。
+      2. `git fetch origin`。
+      3. 分支处理：
+         - 本地或远端已存在 `feature/{{jira_id}}` → `git checkout feature/{{jira_id}}` 后
+           `git pull --rebase origin feature/{{jira_id}}`（远端有则对齐），再 `git rebase origin/main` 跟上 main；
+         - 都不存在 → `git checkout main && git pull && git checkout -b feature/{{jira_id}}`。
+      <HARD-GATE>分支名必须严格 `feature/{{jira_id}}`；新建时从最新 main 派生；已存在时复用不报错。</HARD-GATE>
+      输出：分支名 + 是新建还是复用 + 当前 commit。
+    depends_on: [mark_in_progress]
+    output: branch_info
+
+  - id: read_ticket
+    role: "project-management/project-management-jira-workflow-steward"
+    task: |
+      用 `getJiraIssue`（cloudId={{cloud_id}}, issueIdOrKey={{jira_id}}, responseContentFormat=markdown）
+      读取 ticket，提取结构化字段写入 `.ao-output/task-{{jira_id}}/ticket.json`：
+      summary、acceptance_criteria[]、files_to_touch[]、out_of_scope[]、verification_commands[]、tech_spec_notes。
+
+      <HARD-GATE>缺 files_to_touch 或 verification_commands → 停止并提示补全 ticket，不得靠猜。</HARD-GATE>
+      输出只返回：ticket_path（不内联正文）。
+    depends_on: [setup_branch]
+    output: ticket_ref
+
+  - id: implement
+    role: "engineering/engineering-senior-developer"
+    task: |
+      读 `.ao-output/task-{{jira_id}}/ticket.json` 实现 Task {{jira_id}}。
+      规则（违反即失败）：
+      1. 只改 ticket.files_to_touch 列出的路径；需动其他文件 → 停止并提示用户扩范围，不得擅自越界。
+      2. 不实现 out_of_scope。
+      3. 满足全部 acceptance_criteria。
+      实现摘要写入 `.ao-output/task-{{jira_id}}/impl-summary.md`（动了哪些文件、如何满足每条 AC）。
+      输出只返回：impl_summary_path + 实际改动文件清单。
+    depends_on: [read_ticket]
+    output: impl_ref
+
+  - id: test_and_verify
+    role: "engineering/engineering-senior-developer"
+    task: |
+      一步完成测试与验证（合并原 dev_test + qa_automation + verify）。
+      读 `.ao-output/task-{{jira_id}}/ticket.json` 与 `impl-summary.md`。
+
+      执行：
+      1. 编写 / 补充 unit + 集成测试，覆盖每条 AC 与关键边界；测试文件落在 files_to_touch 允许路径内。
+      2. 逐条运行 ticket.verification_commands，记录真实输出（command / exit code / 通过与否）。
+      3. 核对每条 AC 是否有通过测试支撑；避免假绿（断言具体、不过度 mock）。
+
+      结果写入 `.ao-output/task-{{jira_id}}/verify_result.md`（遵循模板 `templates/task-development/verify_result.md`）。
+      <HARD-GATE>任一命令失败 / 任一测试未过 / 有 AC 无测试支撑 → 判定 ❌，停在本步修复后重跑，禁止进入 commit。</HARD-GATE>
+      输出只返回：verify_result_path + ✅/❌。
+    depends_on: [implement]
+    output: verify_ref
+
+  - id: commit
+    role: "engineering/engineering-git-workflow-master"
+    task: |
+      前置：verify_ref 必须 ✅，否则停止。
+      读 `.ao-output/task-{{jira_id}}/ticket.json` 取 summary 作 commit 文案。
+      1. 仅 stage files_to_touch 范围内的本 Task 改动。
+      2. 一条 commit，message：`{{jira_id}} <英文祈使句>`（动词开头，由 summary 转写）。
+      输出：commit hash + message。
+    depends_on: [test_and_verify]
+    output: commit_info
+
+  - id: open_pr
+    role: "engineering/engineering-git-workflow-master"
+    task: |
+      rebase 到最新 main 后推送建 PR（把跨 Task 冲突挡在合并前）。
+      1. `git fetch origin main && git rebase origin/main`。冲突 → 停在本步解决，不得带冲突推送。
+      2. rebase 后重跑 ticket.verification_commands 快速确认仍绿；失败则停在本步修复。
+      3. `git push --force-with-lease -u origin feature/{{jira_id}}`。
+      4. **PR 幂等**：先查是否已有该分支的 PR：
+         `gh pr list --repo {{repo}} --head feature/{{jira_id}} --state open --json number,url`
+         - 已存在 → 复用，用 `gh pr edit <编号> --repo {{repo}}` 更新标题/正文（push 已更新代码，不重复 create）；
+         - 不存在 → `gh pr create --repo {{repo}} --base main --head feature/{{jira_id}}`。
+         标题 `{{jira_id}} <祈使句>`，正文遵循模板 `templates/task-development/pr_body.md`（改动摘要、Files touched、测试结果、关联 {{jira_id}}）。
+      输出：PR URL + 是新建还是复用。
+    depends_on: [commit]
+    output: pr_info
+
+  - id: mark_resolved
+    role: "project-management/project-management-jira-workflow-steward"
+    task: |
+      PR 建好后用 Atlassian MCP（cloudId={{cloud_id}}, issueIdOrKey={{jira_id}}）把 Jira 流转到 `Resolved`。
+      最后跑 `scripts/validate-task-development-output.ps1`，未通过则报失败。
+      输出：Jira 最新状态 + PR URL + validator 结果。
+    depends_on: [open_pr]
+    output: resolved_status

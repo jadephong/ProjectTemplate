@@ -1,0 +1,123 @@
+name: "Sprint 规划与评审 deep"
+description: "需求对齐 + Sprint 拆解 → 逐 Story grill（产品）→ 逐 Story 技术定稿（架构师）→ 审批包 + Spec 质检 + ADR 草案。全程只落本地 .ao-output，零 Jira 写入。本工作流自然结束即审批暂停点——批准后人工运行 sprint-jira-dryrun.yaml（审批边界由文件分割实现，不靠 prompt 暂停）。"
+
+# HARD RULES
+# - 面向用户正文一律中文
+# - 严禁任何 Jira / Atlassian 写操作
+# - 逐 Story grill 与逐 Story 落盘是强约束，不得用聊天总结替代
+# - 大产物落 .ao-output 文件，step 间只传路径
+# - 结束前跑 scripts/validate-sprint-plan-review-output.ps1
+
+agents_dir: "agents/agency-agents-zh"
+
+llm:
+  provider: deepseek
+  model: deepseek-chat
+  max_tokens: 4096
+
+concurrency: 1
+
+inputs:
+  - name: sprint_name
+    description: "Sprint 标识（如 Sprint 1）"
+    required: false
+    default: "当前 Sprint"
+  - name: run_dir
+    description: "本次运行产物根目录（稳定路径，所有输出基于此）"
+    required: false
+    default: ".ao-output/{{sprint_name}}"
+  - name: sprint_goal
+    description: "本 Sprint 目标 / 交付范围"
+    required: true
+  - name: backlog
+    description: "已有 backlog / 需求 / PRD"
+    required: false
+    default: "无现成 backlog，基于目标推导"
+  - name: tech_context
+    description: "技术背景（技术栈、架构、约束）"
+    required: false
+    default: "沿用 BasePortal 现有技术栈"
+  - name: jira_project
+    description: "目标 Jira 项目 Key（仅审批包标注，不写 Jira）"
+    required: false
+    default: "待定"
+  - name: capacity
+    description: "团队产能"
+    required: false
+    default: "未提供，合理估算并标注"
+  - name: prev_sprint_review
+    description: "上轮验收报告（carryover / 估点偏差 / 技术债 / 教训）"
+    required: false
+    default: "无"
+
+steps:
+  - id: align_and_plan
+    role: "product/product-manager"
+    task: |
+      非交互式规划：基于现有信息一次性输出推荐决策与拆解，**不等用户回答、不卡住 workflow**。
+      输入：目标 {{sprint_goal}}｜backlog {{backlog}}｜上轮复盘 {{prev_sprint_review}}｜产能 {{capacity}}。
+
+      **对齐分析**：能从代码库 / docs/adr / 上轮产物查到的先自查；消化上轮复盘（carryover 入候选、估点校准、踩坑作约束）。
+      对成功判据、范围边界、隐含假设、优先级冲突等关键点，**直接给出推荐决策 + 默认选项**，
+      并把无法自行确定的列入「待确认问题」清单（每项附推荐默认值）——按默认值继续拆解，不停下等待。
+
+      **拆解**：写入 `{{run_dir}}/sprint-backlog.md`：
+      Sprint 目标复述（含成功判据）；**已采用的推荐决策**；**待确认问题清单（问题 → 推荐默认值 → 影响）**；
+      Story 列表（临时 ID 如 S1-1、标题、用户故事、AC≥2 条 Given/When/Then、估点、优先级）；
+      依赖与关键路径；产能校验（超载给砍/挪建议）；Out of scope。
+      待确认问题留给 review_gate 的审批包统一呈现给用户，本步不阻塞。
+      输出只返回：sprint_backlog_path + Story 数 + 待确认问题数。
+    output: backlog_ref
+
+  - id: story_detail
+    role: "product/product-manager"
+    task: |
+      读 `{{run_dir}}/sprint-backlog.md`，对**每个 Story** 一次性写出 PRD 草稿（产品字段），**不交互、不等待**。
+      最终执行者是 OpenCode，它不追问——把产品意图写明确是本步核心。
+      对每个 Story（逐个、不得整批糊弄）：先自查代码库/docs/adr，对成功判据、范围边界、用户价值、隐含假设、
+      与其他 Story 冲突等点**直接给推荐结论**；无法确定的列入该 Story 的「待确认问题（附推荐默认值）」，按默认继续。
+
+      落盘 `{{run_dir}}/stories/<临时ID>.md`，含：
+      Summary（英文祈使句）、用户故事、AC（Given-When-Then 可断言、≥2 条）、Out of scope、优先级/估点、待确认问题（如有）。
+      同步维护 `stories/INDEX.md`（临时 ID ↔ 标题 ↔ 估点 ↔ 路径）。
+      <HARD-GATE>每个 Story 都要逐个产出完整草稿才落盘；严禁 Jira 写操作。</HARD-GATE>
+      输出只返回：stories 目录路径 + INDEX 路径 + 已定稿 Story 数 + 待确认问题总数。
+    depends_on: [align_and_plan]
+    output: grill_ref
+
+  - id: story_spec
+    role: "engineering/engineering-software-architect"
+    task: |
+      读每个 `stories/<临时ID>.md` 的 PRD 草稿，**追加技术字段**（不改已定稿产品字段）。
+      这些字段是 OpenCode 执行契约的核心，必须精确到可直接运行。技术背景：{{tech_context}}。
+
+      对每个 Story 在其文件追加：
+      Files to touch（具体路径，新建文件列预期路径）、关键实现步骤 Steps（有序）、接口契约（URL/Method/请求响应 或 函数签名）、
+      数据模型变更（表/字段/迁移/索引）、边界与异常（错误码/校验/幂等）、
+      Verification commands（可直接运行，如 `mvn -pl <module> test`）、依赖与前置条件。
+      全局技术约定写 `{{run_dir}}/tech_conventions.md`。
+      <HARD-GATE>Files to touch / Verification commands 缺一即该 Story 未完成；Verification 必须可运行不接受"写测试"；严禁 Jira 写操作。</HARD-GATE>
+      输出只返回：已补全 Story 数 + tech_conventions 路径。
+    depends_on: [story_detail]
+    output: spec_ref
+
+  - id: review_gate
+    role: "project-management/project-management-project-shepherd"
+    task: |
+      质检 + ADR 草案 + 审批包（本步是 workflow 终点，自然结束即审批暂停点）。
+      读 `{{run_dir}}/` 下 sprint-backlog.md、stories/*.md、tech_conventions.md。
+
+      **1. Spec 质检**（只标问题）：每个 Story 必填字段是否齐全（✅/❌/⚠️）；歧义扫描（模糊词、接口缺出入参/错误码、AC 不可测、残留 TODO）；
+      跨 Story 一致性（接口/命名/数据模型冲突、依赖成环）。结论分 🔴 阻塞 / 🟡 建议。
+      **2. ADR 草案**（只记非显然、有 tradeoff）：从 backlog / stories 提炼架构选型、跨 Story 约定、有取舍的产品决策；
+      格式含 状态(提议)/背景/决策/备选/影响/关联 {{sprint_name}}。无则写"本 Sprint 无需新增 ADR"，不硬造。
+      **3. 审批包**：写 `{{run_dir}}/approval_bundle.md`（标注"待审批，未同步 Jira"，遵循模板 `templates/sprint-plan-review/approval_bundle.md`）：
+      一页纸摘要（目标/Story 数/总估点/关键路径/风险）、🔴 阻塞项前置、Story 列表、Spec 要点对照表、ADR 草案、
+      **待确认问题汇总清单**（汇总 backlog 与各 Story 的「待确认问题 → 推荐默认值 → 影响」，编号呈现供用户一次性拍板）、
+      同步预案说明（批准后 sprint-jira-dryrun 预览 → sprint-jira-apply 写入：建 Epic、Story parent 指向 Epic、Tech Spec 全文写入 description）。
+
+      最后跑 `scripts/validate-sprint-plan-review-output.ps1`。
+      <HARD-GATE>不执行任何 Jira 写入、不写 docs/adr/。批准与同步由独立文件（sprint-jira-dryrun → apply）承接。</HARD-GATE>
+      输出：approval_bundle 路径 + 🔴 阻塞项数 + validator 结果 + 一句"待审批，批准后运行 sprint-jira-dryrun.yaml"。
+    depends_on: [story_spec]
+    output: review_package

@@ -1,0 +1,56 @@
+name: "Sprint Jira 同步 — Dry-run"
+description: "审批后第一步：只生成同步预案，绝不写 Jira。幂等查重（按 label + 临时 ID）→ 输出 Epic/Story 创建更新清单 + 候选 JSON。人工核对后再运行 sprint-jira-apply.yaml（confirm_sync: true）真正写入。"
+
+# HARD RULES
+# - 面向用户 / Jira 正文一律中文
+# - 本工作流严禁任何 Jira 写操作（创建/更新/流转/评论），只读 + 生成预案
+# - 一旦发生写入即视为 workflow 失败
+
+agents_dir: "agents/agency-agents-zh"
+
+llm:
+  provider: deepseek
+  model: deepseek-chat
+  max_tokens: 2048
+
+concurrency: 1
+
+inputs:
+  - name: sprint_name
+    description: "Sprint 标识，须与规划一致（用作 label / 临时 ID 前缀）"
+    required: true
+  - name: run_dir
+    description: "本次运行产物根目录（须与规划一致），所有输出基于此"
+    required: false
+    default: ".ao-output/{{sprint_name}}"
+  - name: jira_project
+    description: "目标 Jira 项目 Key（如 BP）"
+    required: true
+  - name: approved_plan_path
+    description: "已批准的审批包路径（sprint-plan-review-deep 产出的 approval_bundle.md 所在 .ao-output 目录）"
+    required: true
+  - name: cloud_id
+    description: "Jira 站点"
+    required: false
+    default: "jadephong.atlassian.net"
+
+steps:
+  - id: jira_dryrun
+    role: "project-management/project-management-jira-workflow-steward"
+    task: |
+      只做预览，绝不写 Jira。读 {{approved_plan_path}} 下的 approval_bundle.md 与 stories/*.md。
+
+      1. **幂等查重**：用 Atlassian/Jira MCP 按 label `sprint:{{sprint_name}}` + 临时 ID（如 S1-1）在项目 {{jira_project}} 搜索；
+         每个临时 ID 标注 🆕 将新建 / 🔄 已存在将更新（附 Issue Key）/ ⚠️ 疑似重复需人工判断。
+      2. **创建/更新清单**：
+         - 1 个 **Epic**（summary=「{{sprint_name}} — <目标>」，ADR 摘要嵌入正文）；
+         - 各 **Story**：parent 指向该 Epic，含层级、summary、估点（Story Points）、优先级、Sprint、依赖链接；
+           Tech Spec **挂载方式固定为写入 Story description 正文全文**，禁止附件/外链。
+      3. **风险提示**：误建重复、覆盖他人字段、依赖链接指向不存在条目。
+      4. **打标约定**：所有条目加 `sprint:{{sprint_name}}` + `tmpid:<临时ID>` 作幂等键。
+
+      写入 `{{run_dir}}/jira_dryrun.md`（模板 `templates/sprint-jira-sync/jira_dryrun.md`）
+      与 `{{run_dir}}/jira_sync_candidates.json`（结构化候选：每条含 tmpid、action、existing_key、fields、parent、links）。
+      <HARD-GATE>任一 Jira MCP 不可用或鉴权失败 → 停止并提示先连接 Atlassian。本步只读，发生任何写入即失败。</HARD-GATE>
+      输出只返回：jira_dryrun_path + candidates_json_path + 🆕/🔄/⚠️ 计数 + 一句"核对无误后运行 sprint-jira-apply.yaml 并传 confirm_sync: true"。
+    output: sync_plan

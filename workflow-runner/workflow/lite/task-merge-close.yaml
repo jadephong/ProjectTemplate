@@ -1,0 +1,87 @@
+name: "Task 合并与关单"
+description: "评审通过后触发：合并前置门（确认 APPROVED + 可合并 + CI 绿 + 取关单素材）→ 合并 PR + Jira 转 Done + 四要素关单评论 + 回读校验。preflight 未过禁止合并。"
+
+# HARD RULES
+# - 面向用户 / Jira / GitHub 正文一律中文
+# - preflight 未通过禁止进入 merge_and_close
+# - merge 后回读验证 PR merged / Jira Done / 评论 三项
+
+agents_dir: "agents/agency-agents-zh"
+
+llm:
+  provider: deepseek
+  model: deepseek-chat
+  max_tokens: 1536
+
+concurrency: 1
+
+inputs:
+  - name: jira_id
+    description: "要关闭的 Jira Task Key（如 EMT-50），须与 PR 对应"
+    required: true
+  - name: pr_url
+    description: "已评审通过待合并的 PR URL（分支 feature/<jira_id>）"
+    required: true
+  - name: repo
+    description: "GitHub 仓库 owner/repo"
+    required: false
+    default: "jadephong/BasePortal"
+  - name: cloud_id
+    description: "Jira 站点"
+    required: false
+    default: "jadephong.atlassian.net"
+  - name: merge_method
+    description: "合并方式：squash / merge / rebase"
+    required: false
+    default: "squash"
+  - name: allow_missing_review_result
+    description: "review-result.json 不存在时是否允许回退 GitHub reviewDecision 判定。默认 false（必须有评审结果文件）"
+    required: false
+    default: "false"
+
+steps:
+  - id: preflight
+    role: "engineering/engineering-git-workflow-master"
+    task: |
+      合并前置门：只核对取数，绝不合并。
+      1. **评审结果门**（确定性，先于一切）：检查 `.ao-output/review-{{jira_id}}/review-result.json`：
+         ```powershell
+         $rr = ".ao-output/review-{{jira_id}}/review-result.json"
+         if (Test-Path $rr) {
+           $status = (Get-Content $rr -Raw | ConvertFrom-Json).status
+           if ($status -ne "pass") {
+             Write-Error "评审结果 status='$status'（非 pass），禁止合并。请先走 task-fix-review-lite 返修。"
+             exit 1
+           }
+           Write-Output "review-result.json: status=pass，放行"
+         } elseif ("{{allow_missing_review_result}}".Trim().ToLower() -eq "true") {
+           Write-Output "review-result.json 不存在，但 allow_missing_review_result=true，回退到 gh reviewDecision 判定"
+         } else {
+           Write-Error "review-result.json 不存在且 allow_missing_review_result=false，禁止合并。"
+           exit 1
+         }
+         ```
+         文件存在但 status != pass → exit 1；文件不存在且 allow_missing_review_result=false → exit 1；
+         只有 status=pass 或（不存在 且 allow_missing_review_result=true）才放行靠下面 gh 判定。
+      2. `gh pr view <编号> --repo {{repo}} --json reviewDecision,mergeable,state,headRefName,title,body`
+         核对：reviewDecision=APPROVED、state=OPEN、mergeable 可合并、headRefName=`feature/{{jira_id}}`。
+      3. `gh pr checks <编号> --repo {{repo}}` 确认 CI 全绿。
+      4. 从 PR body 提取关单素材（改动摘要、Files touched、测试结果）写入 `.ao-output/task-{{jira_id}}/close-material.json`。
+      <HARD-GATE>review-result.json 存在但 status≠pass / 不存在且 allow_missing_review_result=false / reviewDecision 非 APPROVED / 已关闭 / 不可合并 / CI 未过 → ❌ 停止说明原因（返修走 task-fix-review-lite），禁止合并。</HARD-GATE>
+      输出只返回：✅/❌ + close_material_path。
+    output: preflight_result
+
+  - id: merge_and_close
+    role: "engineering/engineering-git-workflow-master"
+    task: |
+      前置：preflight ✅，否则立即停止。读 `.ao-output/task-{{jira_id}}/close-material.json`。
+      1. **合并**：`gh pr merge <编号> --repo {{repo}} --{{merge_method}}`，记录合并 commit。
+      2. **Jira 转 Done**：Atlassian MCP（cloudId={{cloud_id}}）将 {{jira_id}} 流转到 `Done`。
+      3. **关单评论**（addCommentToJiraIssue，遵循模板 `templates/task-merge-close/jira_close_comment.md`），四要素：
+         Jira Link（https://{{cloud_id}}/browse/{{jira_id}}）+ PR Link（{{pr_url}}）+ 改动摘要 + 测试结果。
+      4. **回读校验**：确认 PR 已 merged、Jira=Done、评论已发；任一不符则报警。
+      最后跑 `scripts/validate-task-merge-close-output.ps1`。
+      <HARD-GATE>未经 preflight 确认评审通过，不得合并、不得转 Done。</HARD-GATE>
+      输出：合并 commit + Jira 新状态 + 评论链接 + validator 结果。
+    depends_on: [preflight]
+    output: close_result
