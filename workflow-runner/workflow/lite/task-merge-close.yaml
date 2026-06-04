@@ -38,6 +38,18 @@ inputs:
     description: "review-result.json 不存在时是否允许回退 GitHub reviewDecision 判定。默认 false（必须有评审结果文件）"
     required: false
     default: "false"
+  - name: bot_app_id
+    description: "reviewer bot (jp-reviewer-bot) App ID"
+    required: false
+    default: "3954150"
+  - name: bot_installation_id
+    description: "reviewer bot Installation ID"
+    required: false
+    default: "137794369"
+  - name: bot_pem_path
+    description: "reviewer bot private key (.pem) 路径"
+    required: false
+    default: ".secrets/jp-reviewer-bot.pem"
 
 steps:
   - id: preflight
@@ -75,13 +87,19 @@ steps:
     role: "engineering/engineering-git-workflow-master"
     task: |
       前置：preflight ✅，否则立即停止。读 `.ao-output/task-{{jira_id}}/close-material.json`。
-      1. **合并**：`gh pr merge <编号> --repo {{repo}} --{{merge_method}}`，记录合并 commit。
-      2. **Jira 转 Done**：Atlassian MCP（cloudId={{cloud_id}}）将 {{jira_id}} 流转到 `Done`。
-      3. **关单评论**（addCommentToJiraIssue，遵循模板 `templates/task-merge-close/jira_close_comment.md`），四要素：
+      合并与 PR 评论以 **reviewer bot** 身份发出。
+      1. **取 reviewer bot token**（后续 gh 命令以 bot 身份；按运行环境二选一）：
+         - Windows: `$env:GH_TOKEN = & pwsh scripts/gh-app-token.ps1 -AppId {{bot_app_id}} -InstallationId {{bot_installation_id}} -PemPath {{bot_pem_path}}`
+         - Linux/macOS: `export GH_TOKEN=$(bash scripts/gh-app-token.sh {{bot_app_id}} {{bot_installation_id}} {{bot_pem_path}})`
+      2. **合并（reviewer bot）**：`gh pr merge <编号> --repo {{repo}} --{{merge_method}}`，记录合并 commit。
+      3. **PR 关单评论（reviewer bot）**：`gh pr comment <编号> --repo {{repo}} --body "🤖 jp-reviewer-bot：评审通过，已合并并关闭 {{jira_id}}。"`
+      4. **Jira 转 Done**：Atlassian MCP（cloudId={{cloud_id}}）将 {{jira_id}} 流转到 `Done`。
+      5. **Jira 关单评论**（addCommentToJiraIssue，遵循模板 `templates/task-merge-close/jira_close_comment.md`），四要素：
          Jira Link（https://{{cloud_id}}/browse/{{jira_id}}）+ PR Link（{{pr_url}}）+ 改动摘要 + 测试结果。
-      4. **回读校验**：确认 PR 已 merged、Jira=Done、评论已发；任一不符则报警。
+      6. **回读校验**：确认 PR 已 merged、Jira=Done、评论已发；任一不符则报警。
       最后跑 `scripts/validate-task-merge-close-output.ps1`。
+      注：GH_TOKEN 仅本步为 reviewer bot token；reviewer bot 需有 contents+pull_requests write 权限才能合并。
       <HARD-GATE>未经 preflight 确认评审通过，不得合并、不得转 Done。</HARD-GATE>
-      输出：合并 commit + Jira 新状态 + 评论链接 + validator 结果。
+      输出：合并 commit + Jira 新状态 + PR/Jira 评论链接 + validator 结果。
     depends_on: [preflight]
     output: close_result

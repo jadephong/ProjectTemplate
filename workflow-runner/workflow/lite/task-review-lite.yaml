@@ -31,6 +31,18 @@ inputs:
     description: "Jira 站点"
     required: false
     default: "jadephong.atlassian.net"
+  - name: bot_app_id
+    description: "reviewer bot (jp-reviewer-bot) App ID"
+    required: false
+    default: "3954150"
+  - name: bot_installation_id
+    description: "reviewer bot Installation ID"
+    required: false
+    default: "137794369"
+  - name: bot_pem_path
+    description: "reviewer bot private key (.pem) 路径"
+    required: false
+    default: ".secrets/jp-reviewer-bot.pem"
   - name: sonar_project_key
     description: "SonarQube 项目 Key（拉 Quality Gate）"
     required: true
@@ -41,7 +53,7 @@ inputs:
   - name: max_rounds
     description: "最多返修轮次，超过则升级人工"
     required: false
-    default: "10"
+    default: "3"
   - name: context_mode
     description: "full = 全量 diff；incremental = 只看 last_reviewed_sha..HEAD"
     required: false
@@ -145,12 +157,16 @@ steps:
   - id: write_back
     role: "engineering/engineering-devops-automator"
     task: |
-      确定性回写（读 result.json，不做评审判断）。
+      确定性回写（读 result.json，不做评审判断）。GitHub 评论以 **reviewer bot** 身份发出。
       读 `.ao-output/review-{{story_key}}/review-result.json`：
-      1. **GitHub**：`gh pr comment <编号> --repo {{repo}} --body-file` 发布 github_comment_body 到 {{pr_url}}（编号取 pr_url 末段）。
-      2. **Jira**：用 Atlassian MCP（cloudId={{cloud_id}}）把 {{story_key}} 流转到 json.jira_transition_to（Reviewed / Reopened），
+      1. **取 reviewer bot token**（按运行环境二选一）：
+         - Windows: `$env:GH_TOKEN = & pwsh scripts/gh-app-token.ps1 -AppId {{bot_app_id}} -InstallationId {{bot_installation_id}} -PemPath {{bot_pem_path}}`
+         - Linux/macOS: `export GH_TOKEN=$(bash scripts/gh-app-token.sh {{bot_app_id}} {{bot_installation_id}} {{bot_pem_path}})`
+      2. **GitHub（reviewer bot）**：`gh pr comment <编号> --repo {{repo}} --body-file <github_comment_body 临时文件>` 发布到 {{pr_url}}（编号取 pr_url 末段）。
+      3. **Jira**：用 Atlassian MCP（cloudId={{cloud_id}}）把 {{story_key}} 流转到 json.jira_transition_to（Reviewed / Reopened），
          并加一条最小中文回链评论，遵循模板 `templates/task-review/write_back.md`
          （评审轮次 {{review_round}}/{{max_rounds}}、评审结论、GitHub Review Comment 链接）。
+      注：GH_TOKEN 仅本步为 reviewer bot token；Jira 仍走 Atlassian MCP，不受影响。
       输出：GitHub 评论链接 + Jira 新状态。
     depends_on: [review_once]
     output: writeback_result

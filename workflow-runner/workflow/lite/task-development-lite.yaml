@@ -28,6 +28,18 @@ inputs:
     description: "Jira 站点"
     required: false
     default: "jadephong.atlassian.net"
+  - name: bot_app_id
+    description: "developer bot (jp-developer-bot) App ID"
+    required: false
+    default: "3954083"
+  - name: bot_installation_id
+    description: "developer bot Installation ID"
+    required: false
+    default: "137794452"
+  - name: bot_pem_path
+    description: "developer bot private key (.pem) 路径"
+    required: false
+    default: ".secrets/jp-developer-bot.pem"
 
 steps:
   - id: mark_in_progress
@@ -108,16 +120,20 @@ steps:
   - id: open_pr
     role: "engineering/engineering-git-workflow-master"
     task: |
-      rebase 到最新 main 后推送建 PR（把跨 Task 冲突挡在合并前）。
+      rebase 到最新 main 后推送建 PR（把跨 Task 冲突挡在合并前）。**PR 与评论以 developer bot 身份发出。**
       1. `git fetch origin main && git rebase origin/main`。冲突 → 停在本步解决，不得带冲突推送。
       2. rebase 后重跑 ticket.verification_commands 快速确认仍绿；失败则停在本步修复。
       3. `git push --force-with-lease -u origin feature/{{jira_id}}`。
-      4. **PR 幂等**：先查是否已有该分支的 PR：
-         `gh pr list --repo {{repo}} --head feature/{{jira_id}} --state open --json number,url`
-         - 已存在 → 复用，用 `gh pr edit <编号> --repo {{repo}}` 更新标题/正文（push 已更新代码，不重复 create）；
+      4. **取 developer bot token**（后续所有 gh 命令以 bot 身份执行；按运行环境二选一）：
+         - Windows: `$env:GH_TOKEN = & pwsh scripts/gh-app-token.ps1 -AppId {{bot_app_id}} -InstallationId {{bot_installation_id}} -PemPath {{bot_pem_path}}`
+         - Linux/macOS: `export GH_TOKEN=$(bash scripts/gh-app-token.sh {{bot_app_id}} {{bot_installation_id}} {{bot_pem_path}})`
+      5. **PR 幂等**：`gh pr list --repo {{repo}} --head feature/{{jira_id}} --state open --json number,url`
+         - 已存在 → `gh pr edit <编号> --repo {{repo}}` 更新标题/正文（不重复 create）；
          - 不存在 → `gh pr create --repo {{repo}} --base main --head feature/{{jira_id}}`。
          标题 `{{jira_id}} <祈使句>`，正文遵循模板 `templates/task-development/pr_body.md`（改动摘要、Files touched、测试结果、关联 {{jira_id}}）。
-      输出：PR URL + 是新建还是复用。
+      6. **developer bot 评论**：`gh pr comment <编号> --repo {{repo}} --body "🤖 jp-developer-bot：已提交实现并通过验证，请 review。"`
+      注：GH_TOKEN 仅在本步内为 bot token；git push 仍用宿主 git 凭证，commit author 不变。
+      输出：PR URL + 是新建还是复用 + bot 评论链接。
     depends_on: [commit]
     output: pr_info
 

@@ -211,6 +211,68 @@ run sprint-review-deep  sprint_name=Sprint-7 jira_project=BP sprint_goal="..."
 | **Jira 流转职责** | task-review-lite 的 `write_back` 自己流转；task-fix-review-lite 交 n8n 读 `fix-result.json` 执行。 |
 | **模板** | 产物遵循 `templates/` 下对应模板（相对路径，runner base = 本目录）。 |
 | **外部工具** | 安全 = Snyk weekly scan；代码异味/复杂度/Quality Gate = SonarQube（task-review-lite 需传 `sonar_project_key`）。 |
+| **Bot 身份** | developer / reviewer 两个 GitHub App 发 PR/评论/合并，详见下方「GitHub App Bot 身份」章节；私钥放 `.secrets/*.pem`。 |
+
+---
+
+## GitHub App Bot 身份
+
+四个 task workflow 用两个 GitHub App 以 **bot 身份** 发 PR / 评论 / 合并，让"开发"和"评审"动作在 GitHub 上有清晰可辨的来源（显示为 `xxx[bot]`）。
+
+| Workflow | 步骤 | Bot | 动作 |
+|---|---|---|---|
+| `task-development-lite` | `open_pr` | **jp-developer-bot** | 建/更新 PR + "请 review" 评论 |
+| `task-fix-review-lite` | `push_update` | **jp-developer-bot** | "已返修，请重新 review" 评论 |
+| `task-review-lite` | `write_back` | **jp-reviewer-bot** | 评审结论 PR 评论 |
+| `task-merge-close` | `merge_and_close` | **jp-reviewer-bot** | 合并 PR + 关单评论 |
+
+### 凭据（已作为 workflow inputs 默认值）
+
+| Bot | App ID | Installation ID | private key 路径 |
+|---|---|---|---|
+| jp-developer-bot | `3954083` | `137794452` | `.secrets/jp-developer-bot.pem` |
+| jp-reviewer-bot | `3954150` | `137794369` | `.secrets/jp-reviewer-bot.pem` |
+
+App ID / Installation ID 已写进各 workflow 的 `bot_app_id` / `bot_installation_id` 默认值，正常调用无需传参。
+
+### 取 token 脚本（两平台等价）
+
+`scripts/` 下两个等价脚本，把 `app_id + installation_id + pem` 换成 installation access token 打到 stdout：
+
+| 脚本 | 平台 | 依赖 | 参数形式 |
+|---|---|---|---|
+| `gh-app-token.ps1` | Windows | PowerShell 7+（`RSA.ImportFromPem`） | `-AppId -InstallationId -PemPath` |
+| `gh-app-token.sh` | Linux/macOS | `openssl` + `curl` | 位置参数 `<app_id> <installation_id> <pem_path>` |
+
+机制：脚本用 private key 签 RS256 JWT → 调 `/app/installations/<id>/access_tokens` 换 token。workflow 步骤里把它赋给 `GH_TOKEN`，后续 `gh` 命令即以该 bot 身份执行，token 仅在该步生效。
+
+```bash
+# Linux/macOS
+export GH_TOKEN=$(bash scripts/gh-app-token.sh 3954083 137794452 .secrets/jp-developer-bot.pem)
+gh pr comment 12 --repo jadephong/BasePortal --body "..."
+```
+```powershell
+# Windows
+$env:GH_TOKEN = & pwsh scripts/gh-app-token.ps1 -AppId 3954083 -InstallationId 137794452 -PemPath .secrets/jp-developer-bot.pem
+gh pr comment 12 --repo jadephong/BasePortal --body "..."
+```
+
+### 首次配置清单（必做）
+
+1. **下载 private key**：到各 App 设置页 `Generate a private key`，下载 .pem，放到上表路径。
+2. **`.gitignore` 排除 `.secrets/`**：私钥绝不能进仓库。
+3. **配置 App 权限**（Permissions 页，改后需在 Installation 处 Accept 新权限）：
+   - jp-developer-bot：Pull requests = **Read & write**
+   - jp-reviewer-bot：Pull requests = **Read & write** + Contents = **Read & write**（合并需要 Contents 写权限）
+4. **运行环境依赖**：
+   - Windows：`pwsh -v` 确认 PowerShell 7+（5.1 不支持 `RSA.ImportFromPem`）。
+   - Linux/macOS：`openssl`、`curl` 一般自带；不需要 jq。
+5. **`.sh` 换行符**：若脚本在 Windows 侧编辑后拿到 Ubuntu，先 `sed -i 's/\r$//' scripts/gh-app-token.sh` 去掉 CRLF，否则 `bash` 报 `\r` 错。
+
+### 注意
+
+- `git push` 仍用宿主 git 凭证，**commit author 不变**；只有 PR/评论/合并是 bot 身份。
+- reviewer bot 合并 PR 需要 Contents 写权限，否则 `gh pr merge` 会 403。
 
 ---
 

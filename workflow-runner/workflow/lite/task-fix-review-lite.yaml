@@ -33,6 +33,18 @@ inputs:
     description: "Jira 站点"
     required: false
     default: "jadephong.atlassian.net"
+  - name: bot_app_id
+    description: "developer bot (jp-developer-bot) App ID"
+    required: false
+    default: "3954083"
+  - name: bot_installation_id
+    description: "developer bot Installation ID"
+    required: false
+    default: "137794452"
+  - name: bot_pem_path
+    description: "developer bot private key (.pem) 路径"
+    required: false
+    default: ".secrets/jp-developer-bot.pem"
 
 steps:
   - id: resume_branch
@@ -96,9 +108,16 @@ steps:
   - id: push_update
     role: "engineering/engineering-git-workflow-master"
     task: |
-      推送返修更新到已有 PR 分支：`git push --force-with-lease origin feature/{{jira_id}}`。
+      推送返修更新到已有 PR 分支，并以 **developer bot** 身份在 PR 上留言。
+      1. `git push --force-with-lease origin feature/{{jira_id}}`。
+      2. **取 developer bot token**（按运行环境二选一）：
+         - Windows: `$env:GH_TOKEN = & pwsh scripts/gh-app-token.ps1 -AppId {{bot_app_id}} -InstallationId {{bot_installation_id}} -PemPath {{bot_pem_path}}`
+         - Linux/macOS: `export GH_TOKEN=$(bash scripts/gh-app-token.sh {{bot_app_id}} {{bot_installation_id}} {{bot_pem_path}})`
+      3. 查 PR 编号：`gh pr list --repo {{repo}} --head feature/{{jira_id}} --state open --json number`。
+      4. **developer bot 评论**：`gh pr comment <编号> --repo {{repo}} --body "🤖 jp-developer-bot：已按评审意见返修并通过验证，请重新 review。"`
       <HARD-GATE>只推送更新，不建新 PR、不合并。</HARD-GATE>
-      输出：推送结果。
+      注：GH_TOKEN 仅本步为 bot token；git push 仍用宿主 git 凭证。
+      输出：推送结果 + bot 评论链接。
     depends_on: [commit]
     output: push_result
 
