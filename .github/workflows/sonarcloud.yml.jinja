@@ -53,38 +53,66 @@ jobs:
         run: |
           set -euo pipefail
 
+          # ── 1. Quality Gate 状态（含 Duplication 等 metric 条件）──────────
+          QG_URL="https://sonarcloud.io/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}&pullRequest=${PR_NUMBER}"
+          qg=$(curl -sf -u "${SONAR_TOKEN}:" "$QG_URL")
+          qg_status=$(echo "$qg" | jq -r '.projectStatus.status')  # OK / ERROR / WARN
+
+          qg_section=""
+          if [[ "$qg_status" != "OK" ]]; then
+            qg_section="### ❌ Quality Gate 失败条件\n\n"
+            qg_section+="| Metric | 实际值 | 要求 |\n"
+            qg_section+="|---|---|---|\n"
+            while IFS= read -r cond; do
+              cstatus=$(echo "$cond" | jq -r '.status')
+              [[ "$cstatus" == "OK" ]] && continue
+              metric=$(echo  "$cond" | jq -r '.metricKey')
+              actual=$(echo  "$cond" | jq -r '.actualValue // "-"')
+              thresh=$(echo  "$cond" | jq -r '.errorThreshold // "-"')
+              comp_op=$(echo "$cond" | jq -r '.comparator')
+              qg_section+="| 🔴 \`${metric}\` | ${actual} | ${comp_op} ${thresh} |\n"
+            done < <(echo "$qg" | jq -c '.projectStatus.conditions[]')
+          fi
+
+          # ── 2. 代码 Issues（Bug / Vulnerability / Code Smell）─────────────
           SONAR_URL="https://sonarcloud.io/api/issues/search?componentKeys=${SONAR_PROJECT_KEY}&pullRequest=${PR_NUMBER}&resolved=false&severities=BLOCKER,CRITICAL,MAJOR&ps=50"
           issues=$(curl -sf -u "${SONAR_TOKEN}:" "$SONAR_URL")
-
           total=$(echo "$issues" | jq '.total')
 
+          issues_section=""
+          if [[ "$total" != "0" && -n "$total" ]]; then
+            issues_section="### 🐛 新增代码问题 (${total} 条)\n\n"
+            issues_section+="| Severity | Type | File | Line | Message |\n"
+            issues_section+="|---|---|---|---|---|\n"
+            while IFS= read -r row; do
+              sev=$(echo  "$row" | jq -r '.severity')
+              type=$(echo "$row" | jq -r '.type')
+              comp=$(echo "$row" | jq -r '.component' | sed 's|[^:]*:||')
+              line=$(echo "$row" | jq -r '.line // "-"')
+              msg=$(echo  "$row" | jq -r '.message')
+              icon="🟡"
+              [[ "$sev" == "BLOCKER" || "$sev" == "CRITICAL" ]] && icon="🔴"
+              issues_section+="| ${icon} ${sev} | ${type} | \`${comp}\` | ${line} | ${msg} |\n"
+            done < <(echo "$issues" | jq -c '.issues[]')
+          fi
+
+          # ── 3. 删旧评论，发新评论 ─────────────────────────────────────────
           old_id=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
-            --jq '[.[] | select(.body | startswith("## 🔍 SonarCloud Issues"))] | first | .id // empty')
+            --jq '[.[] | select(.body | startswith("## 🔍 SonarCloud"))] | first | .id // empty')
           [[ -n "${old_id:-}" ]] && gh api -X DELETE "repos/${REPO}/issues/comments/${old_id}"
 
-          if [[ "$total" == "0" || -z "$total" ]]; then
-            clean_msg="## 🔍 SonarCloud Issues"$'\n'"✅ 本 PR 无新增 BLOCKER / CRITICAL / MAJOR 问题。"
+          if [[ -z "$qg_section" && -z "$issues_section" ]]; then
+            clean_msg="## 🔍 SonarCloud"$'\n'"✅ Quality Gate 通过，无新增 BLOCKER / CRITICAL / MAJOR 问题。"
             gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$clean_msg"
             exit 0
           fi
 
-          header="## 🔍 SonarCloud Issues (${total} 条新增)\n\n"
-          header+="| Severity | Type | File | Line | Message |\n"
-          header+="|---|---|---|---|---|\n"
+          gate_label="✅ 通过"
+          [[ "$qg_status" != "OK" ]] && gate_label="❌ 失败"
 
-          rows=""
-          while IFS= read -r row; do
-            sev=$(echo  "$row" | jq -r '.severity')
-            type=$(echo "$row" | jq -r '.type')
-            comp=$(echo "$row" | jq -r '.component' | sed 's|[^:]*:||')
-            line=$(echo "$row" | jq -r '.line // "-"')
-            msg=$(echo  "$row" | jq -r '.message')
+          body="## 🔍 SonarCloud — Quality Gate ${gate_label}\n\n"
+          [[ -n "$qg_section" ]]     && body+="${qg_section}\n"
+          [[ -n "$issues_section" ]] && body+="${issues_section}\n"
+          body+="[查看完整分析 →](https://sonarcloud.io/project/overview?id=${SONAR_PROJECT_KEY})"
 
-            icon="🟡"
-            [[ "$sev" == "BLOCKER" || "$sev" == "CRITICAL" ]] && icon="🔴"
-
-            rows+="| ${icon} ${sev} | ${type} | \`${comp}\` | ${line} | ${msg} |\n"
-          done < <(echo "$issues" | jq -c '.issues[]')
-
-          body="${header}${rows}\n\n[查看完整分析 →](https://sonarcloud.io/project/overview?id=${SONAR_PROJECT_KEY})"
           printf "%b" "$body" | gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file -
