@@ -1,6 +1,6 @@
 # ProjectTemplate
 
-一键创建标准化项目模板，集成 GitHub Actions、代码扫描、AI Agent 和 Sprint 管理流程。
+一键创建标准化项目模板，集成 GitHub Actions、代码扫描、AI Agent、openspec spec-driven 流程，以及一套 agent-first 的 **Harness** 操作体系。
 
 ## 使用方式
 
@@ -35,28 +35,39 @@ bash scripts/init.sh
 
 ## 项目结构
 
+生成的项目自带一套 **Harness**（agent-first 操作体系）：
+
 ```
-├── .github/workflows/scan.yml    # SonarCloud + Snyk 自动扫描
+├── AGENTS.md                     # agent 路由地图（§0-9：默认行为/任务分级/openspec/模块路由/红线/skill/git…）
+├── openspec/                     # spec-driven 变更（CLI；project.md + specs/ + changes/archive/）
 ├── docs/
-│   ├── product-direction/        # 产品方向模板
-│   ├── sprint/                   # Sprint 计划模板
-│   └── retro/                    # Retro 模板
+│   ├── harness/                  # 治理文档（HARNESS_PROFILE/ARCHITECTURE/DESIGN/QUALITY_SCORE/RELIABILITY/SECURITY/FRONTEND/PLANS/PRODUCT_SENSE）
+│   ├── design-docs/  (adr/)      # 设计信条 core-beliefs + 架构决策 ADR
+│   ├── product-specs/            # 产品规格 + VISION + onboarding
+│   ├── exec-plans/               # active/ completed/ templates/（sprint 约定：active/sprint-N、completed/sprint-N/{plan,sprint-review}）
+│   ├── references/               # 引用索引 + skill-routing.md（skill 速查地图）
+│   └── PRD.md
+├── .github/workflows/            # SonarCloud + Snyk 自动扫描
 ├── scripts/init.sh               # 初始化脚本
-├── agents/                       # AI Agent 定义
+├── agents/                       # AI Agent 定义（agency-agents-zh）
 ├── skills/                       # Claude Code 技能
 ├── workflow-runner/              # Sprint 交付流水线
+├── harness/                      # 内部 autoharness（dev 工具，与产品分离）
 ├── src/                          # 源代码（初始化后创建）
 └── .copier-answers.yml           # Copier 追踪文件（自动生成，勿手动编辑）
 ```
 
+> Harness 治理文档多为**占位模板**（带 `<!-- TODO -->` + `{{ project_name }}` / `{{ jira_project_key }}` 变量），生成后按提示填项目事实。`AGENTS.md` 与 `skill-routing.md` 是通用层，开箱即用。
+
 ## 工作流
 
-1. **Product Direction** → 填写 `docs/product-direction/VISION.md`
-2. **Sprint Planning** → 填写 `docs/sprint/SPRINT-N.md`，同步到 Jira
-3. **Development** → Feature branch → PR 自动触发 SonarCloud + Snyk 扫描
-4. **Branch Protection** → Scan 必须通过才能 merge，code review 必须批准
-5. **Retro** → 填写 `docs/retro/SPRINT-N-RETRO.md`
-6. **Template Sync** → 模板更新时自动在 downstream repo 开 Sync Issue
+1. **填 Harness 事实** → `docs/harness/HARNESS_PROFILE.md`（项目事实源）+ `docs/product-specs/VISION.md`（愿景）
+2. **启用 openspec** → `openspec init --tools claude,codex,opencode`（生成 `/opsx:*` slash 命令）
+3. **任务分级**（见 `AGENTS.md` §2）→ T0 直接做 / T1 轻量 plan 落 `docs/exec-plans/active/` / T2 走 openspec
+4. **Sprint** → 进行中 `docs/exec-plans/active/sprint-N/`；完成 `docs/exec-plans/completed/sprint-N/{plan,sprint-review}`
+5. **Development** → Feature branch → PR 自动触发 SonarCloud + Snyk 扫描
+6. **Branch Protection** → Scan 必须通过才能 merge，code review 必须批准
+7. **Template Sync** → 模板更新时自动在 downstream repo 开 Sync Issue
 
 ## 模板同步
 
