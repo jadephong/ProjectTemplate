@@ -1,0 +1,35 @@
+# OpenSpec — {{ project_name }}
+
+本仓库用 [OpenSpec](https://github.com/Fission-AI/OpenSpec) CLI 做 spec-driven 开发。
+首次使用先跑 `openspec init --tools claude,codex,opencode`（生成 slash 命令）。
+
+## 结构
+
+```
+openspec/
+├── project.md   项目上下文（给 AI 读）
+├── specs/       活文档：系统当前行为的真相
+└── changes/     变更提案
+    └── archive/   已实现并归档
+```
+
+## 工作流
+
+1. **提案**：`/opsx:propose "<想法>"` → `changes/<name>/{proposal,design,tasks}.md` + `specs/` delta。
+2. **实现 + 验收**：测试绿 + SonarCloud gate + review pass（见仓库根 `AGENTS.md`）。
+3. **校验**：`openspec validate --changes`（或 `--all`）。
+4. **归档**：`/opsx:archive`（或 `openspec archive <name>`）→ delta 合进 `specs/`，change 移 `changes/archive/`。
+
+## 常用命令
+
+- `openspec list` —— 列出 active changes
+- `openspec validate --all`
+- `openspec archive <name>`
+
+slash 命令（`/opsx:*`）由 `openspec init` 装在 `.claude/.codex/.opencode`（git-ignored，重启 IDE 生效）。
+
+## 与其它文档
+
+- 项目事实 / 架构：`../docs/harness/HARNESS_PROFILE.md`、`../docs/harness/ARCHITECTURE.md`
+- 产品规格：`../docs/product-specs/`
+- ADR：`../docs/design-docs/adr/`

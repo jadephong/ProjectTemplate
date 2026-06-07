@@ -1,0 +1,26 @@
+# Architecture — {{ project_name }}
+
+> 事实源：[`HARNESS_PROFILE.md`](HARNESS_PROFILE.md)。本文件描述**本仓库自身**的结构与边界。
+
+## Overview
+
+<!-- TODO: 一段话讲清架构选型与定位 -->
+
+## Main Components
+
+<!-- TODO: 关键模块/包及职责、真相归属、agent 默认路由 -->
+
+## Main Workflows
+
+- 外部用户工作流：<!-- TODO -->
+- 内部工程工作流：Jira → `feature/<JiraID>` → 垂直切片（可运行/可演示/可提交）→ 测试绿 + Sonar gate + review → 合并。
+- 问题升级工作流：<!-- TODO -->；CI 修复超 3 轮 → ESCALATED。
+- 发布工作流：<!-- TODO -->
+
+## Boundaries
+
+- **No-go（勿改）**：`harness/`（autoharness）；<!-- TODO -->
+- **Approval-needed**：<!-- TODO: 核心契约/状态/审计/跨模块边界 -->
+- **Legacy**：<!-- TODO -->
+
+详见 `HARNESS_PROFILE.md` 的 Repo Map 与 Boundaries 两节。

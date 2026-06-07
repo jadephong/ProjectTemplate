@@ -1,0 +1,64 @@
+# HARNESS_PROFILE — {{ project_name }}
+
+> 本文件是 {{ project_name }} 这套 Harness 的**事实源（source of truth）**，描述本仓库自身——agent 据此干活。
+> 填写指引见 `generated/harness-profile-template.md`。语言：中文为主，保留英文术语/路径/文件名。
+
+## Project Identity
+
+- **名称**：{{ project_name }}
+- **仓库形态**：<!-- TODO: monorepo / 多模块 / starters 等 -->
+- **主要用户**：<!-- TODO -->
+- **最重要的结果**：<!-- TODO -->
+
+## Project Purpose
+
+<!-- TODO: 为什么存在、成功标准。权威设计文档链接（docs/product-specs/、docs/design-docs/adr/）。 -->
+
+## Repo Map
+
+<!-- TODO: 关键模块/目录 + 真相归属/优先级 -->
+
+| 路径 | 职责 | 真相归属 / 优先级 |
+|---|---|---|
+| `harness/` | 内部 autoharness（dev 工具） | 与产品分离，默认勿改 |
+| `docs/harness/` | 本 Harness 治理文档 | agent 操作手册 |
+| `openspec/` | spec-driven 变更（CLI） | 变更流程 |
+
+## User Success Path
+
+<!-- TODO: 最重要的对外路径，驱动 quickstart 优先级 -->
+
+## Main Workflows
+
+<!-- TODO: 重复流程（触发 / 先读 / 步骤 / 输出 / 校验 / 升级） -->
+
+## Git Workflow
+
+- **Issue tracker**：Jira（key `{{ jira_project_key or '<填 Jira key>' }}`），不用 GitHub Issues。
+- **分支**：`feature/<JiraID>` ← `main`；约定式提交；rebase `main`。
+- **合并门**：测试绿 + SonarCloud gate（WARN 不算过）+ review pass。
+- **Tag / release**：<!-- TODO -->
+
+## Quality Priorities
+
+<!-- TODO: 按对本项目的重要性排序质量轴（可审计/可靠/安全/清晰/可用/速度…） -->
+
+## Skills And Tools
+
+- **AI CLI**：claude / opencode / codex（配置在 `.claude/.codex/.opencode`，git-ignored）。
+- **spec-driven**：openspec CLI（根 `openspec/`）。
+- **agent roster**：`jadephong/agency-agents-zh`（各 agent 对应任务类型）。
+- **Skill 路由**：`docs/references/skill-routing.md`。
+- **代码图谱**：codegraph MCP（`codegraph_explore` 优先于 grep+read）。
+- **质量门**：SonarCloud + Snyk。
+- <!-- TODO: 项目特定技术栈/工具 -->
+
+## Boundaries
+
+- **默认勿改（no-go）**：`harness/`（autoharness）；<!-- TODO: 其它 no-go，如外部依赖仓库 -->
+- **需审批（approval-needed）**：<!-- TODO: 高危改动，如核心契约/状态机/审计 -->
+- **临时/遗留（legacy）**：<!-- TODO -->
+
+## Open Questions
+
+- [ ] <!-- TODO: 待拍板的问题 -->

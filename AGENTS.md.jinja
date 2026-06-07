@@ -1,0 +1,120 @@
+# AGENTS.md
+
+{{ project_name }} 的 agent 入口与**路由地图**。所有 AI 工具（claude / codex / opencode）从这里开始。
+本文件是地图，不是手册——细节去对应文档查。
+
+---
+
+## 0. 默认行为
+
+- 默认**中文**回答；解释通俗，不堆术语。
+- 不确定就说不确定，不要编。**先判断风险，再行动**——能只读检查就先只读。
+- 问答 / 建议 / 整理提示词 → 默认**不写文件**；项目工作 → 真相留在文档里，不只在对话里。
+- 处理任务前先判断有没有合适 skill（原则见 §6，速查见 `docs/references/skill-routing.md`）。
+- **理解/定位代码先用 codegraph**（MCP 代码图谱，已索引本仓）——`codegraph_explore` 一把梭直接回答，优先于 grep+read，别另开子 agent 重复探索。
+
+---
+
+## 1. Read First
+
+- `docs/harness/HARNESS_PROFILE.md` —— 项目事实源
+- `docs/harness/ARCHITECTURE.md` —— 仓库地图与边界
+- `docs/design-docs/core-beliefs.md` —— 设计信条
+- `docs/exec-plans/index.md` —— 进行中 / 已完成 / 欠债
+- `docs/product-specs/index.md` —— 产品规格索引
+
+---
+
+## 2. 工作流（按任务分级）
+
+每个任务先定级，再选流程——**别拿重流程压小任务**。
+
+| 级别 | 什么任务 | 怎么走 |
+|---|---|---|
+| **T0 琐碎** | typo / rename / 单行 bugfix / 纯问答 | 直接做。不立计划、不碰 openspec。 |
+| **T1 一般** | 多文件改动，但**不改产品行为/契约** | 用 `writing-plans` 生成轻量计划 → 落 `docs/exec-plans/active/`。**不走 openspec**。 |
+| **T2 新功能 / 改产品行为或契约** | 新增或改变产品行为、公共 API、契约 | 走 openspec 全流程（见 §3）。 |
+
+通用步骤：跨模块/跨仓库改动前先读 HARNESS_PROFILE + ARCHITECTURE；完成的 exec-plan 移到 `docs/exec-plans/completed/`。
+
+---
+
+## 3. openspec 流程（仅 T2，CLI v1.4）
+
+新增/改动**产品行为或契约**时走 `openspec/`（仓库根，CLI 管理）：
+
+1. **提案**：`/opsx:propose "<想法>"`（或手建 `openspec/changes/<name>/`：`proposal.md`、`design.md`、`tasks.md`、`specs/` delta）。
+2. **实现并验收**：测试绿 + Sonar gate + review pass。
+3. **校验**：`openspec validate --changes`（或 `--all`）。
+4. **归档**：`/opsx:archive` 或 `openspec archive <name>`——spec delta 合进 `openspec/specs/`，change 移到 `openspec/changes/archive/`。
+
+> 首次需 `openspec init --tools claude,codex,opencode` 生成 slash 命令（装在 `.claude/.codex/.opencode`，git-ignored，重启 IDE 生效）。详见 `openspec/README.md`。
+
+---
+
+## 4. 代码模块路由（改哪个模块）
+
+> 决定改哪个模块——与 skill 速查表层次不同，勿混淆。
+> **TODO（新项目填）**：列出本项目关键模块/包及职责、注意事项。
+
+| 任务 | 去哪 | 注意 |
+|---|---|---|
+| <!-- TODO: 模块/包路由 --> | `<path>` | — |
+| 自治开发流水线 | `harness/` | **dev 工具，与产品分离，默认勿改** |
+
+---
+
+## 5. 红线与确认
+
+**勿改**（红线，详见 `docs/harness/ARCHITECTURE.md`）：<!-- TODO: 本项目 no-go 区，如 harness/、外部依赖仓库 -->。
+
+**改动前必须先说计划**：只做最小必要改动，不碰无关文件，默认先只读分析。
+
+**以下操作必须先确认，绝不绕过**：
+- **代码**：删除/覆盖/批量改写文件；<!-- TODO: 本项目高危改动，如核心契约/状态机/审计 -->。
+- **Git**：推送、创建 PR、回滚、改历史。
+- **依赖/skill**：安装依赖、安装或更新 skill。
+- **外部**：发消息/邮件；改日历/文档/云盘/表格；服务器修复/重启/改配置/部署；处理合同/账号/候选人/简历等敏感信息；对外抓取/审计/比对个人资料。
+
+---
+
+## 6. Skill 使用原则
+
+- 用户点名某 skill → **必须优先用**。
+- 场景匹配某 skill 的 description → 自动用。多个适用 → 先简短说明用哪些及原因。
+- 不确定要不要用 → 倾向于用，并说明判断。
+- 不在可用列表 → 说"可能需要重启 Codex 或检查安装目录"，别假装已启用。
+- 没有合适的 → 说"未命中特定 skill"，正常处理。
+- 完整速查表：`docs/references/skill-routing.md`。
+
+---
+
+## 7. Git Workflow
+
+详见 `docs/harness/HARNESS_PROFILE.md`。
+
+- Issue tracker：**Jira**（key `{{ jira_project_key or '<填 Jira key>' }}`），不用 GitHub Issues。
+- 分支 `feature/<JiraID>` ← `main`；约定式提交；rebase main。
+- 合并门：测试绿 + SonarCloud gate（WARN 不算过）+ review pass。
+- 推送 / PR / 回滚 / 改历史 → **必须确认**（见 §5）。
+
+---
+
+## 8. Source Of Truth
+
+- 项目事实：`docs/harness/HARNESS_PROFILE.md`
+- 架构：`docs/harness/ARCHITECTURE.md`
+- 设计方向/信条：`docs/harness/DESIGN.md`、`docs/design-docs/`
+- 计划与状态：`docs/exec-plans/`
+- 产品规格：`docs/product-specs/`
+- spec 变更流程：`openspec/`（CLI 管理）
+- 引用索引 / skill 速查：`docs/references/`
+- 治理原则：`docs/harness/{QUALITY_SCORE,RELIABILITY,SECURITY,PRODUCT_SENSE,PLANS,FRONTEND}.md`
+
+---
+
+## 9. 输出结构
+
+- **开头**：用了哪些 skill 及原因；没命中就说"未命中特定 skill"。
+- **正文**：短、清楚、接地气；不确定要说明；联网查最新信息前先确认；高影响操作先只读、再等确认。
+- **结尾**：做了什么 / 没做什么 / 还需用户确认什么。

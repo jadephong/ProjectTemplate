@@ -1,0 +1,13 @@
+# PLANS — {{ project_name }}
+
+本 Harness 在 `docs/exec-plans/` 追踪工作。
+
+## Rule
+
+- 进行中 → `docs/exec-plans/active/`（单文件 `<JiraID>-<slug>.md`，或进行中 sprint `active/sprint-N/`）。
+- 完成 → `docs/exec-plans/completed/`（完成的 sprint → `completed/sprint-N/`，内分 `plan/` + `sprint-review/`）。
+- backlog / 技术债 → `docs/exec-plans/tech-debt-tracker.md`。
+
+## 与 Jira 的关系
+
+真实工作项在 **Jira**（key `{{ jira_project_key or '<填 Jira key>' }}`）。本目录是 agent 的执行计划/上下文层，对应一个或多个 Jira issue，不替代 Jira。

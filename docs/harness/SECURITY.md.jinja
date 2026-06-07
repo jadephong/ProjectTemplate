@@ -1,0 +1,20 @@
+# SECURITY — {{ project_name }}
+
+安全规则。
+
+## Secret 处理
+
+- Secret（API key / token）**绝不 commit**；本地 `.env` 读取。
+- 工具本地配置 `.claude/.codex/.opencode`（git-ignored）勿外泄。
+
+## 文档与日志脱敏
+
+- 生成文档 / plan / 日志**不得**写入真实 token / 密钥 / 用户数据。
+
+## 需额外小心的敏感路径
+
+<!-- TODO: 本项目敏感模块 / 操作 -->
+
+## 边界
+
+- 默认**不碰** `harness/`（autoharness）与外部依赖仓库，避免引入未审查代码。

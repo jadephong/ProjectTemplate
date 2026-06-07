@@ -1,0 +1,18 @@
+# Exec Plans — {{ project_name }}
+
+工作追踪。
+
+## 结构
+
+- `active/` —— 进行中工作。
+  - 单文件 plan：`<JiraID>-<slug>.md`（对应 Jira）。
+  - 进行中 sprint：`active/sprint-N/`（该 sprint 工作文档，平铺）。
+- `completed/` —— 已完成 sprint，每个 `completed/sprint-N/` 内分：
+  - `plan/` —— 该 sprint 规划产物。
+  - `sprint-review/` —— 验收/复盘产物（多轮 review 按日期 `sprint-review/<date>/`）。
+- `tech-debt-tracker.md` —— backlog 与技术债。
+- `templates/` —— sprint / retro 模板。
+
+## 与 Jira 的关系
+
+真实工作项在 **Jira**（key `{{ jira_project_key or '<填 Jira key>' }}`）。本目录是 agent 的执行计划/上下文层，不替代 Jira。

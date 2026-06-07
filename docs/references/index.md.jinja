@@ -1,0 +1,26 @@
+# References — {{ project_name }}
+
+## 代码与仓库
+
+- 本仓库：{{ github_repo_url }}
+- 项目模板：`jadephong/ProjectTemplate`（Copier）。
+- 本 Harness 文档体系源自 `lysrain21/Harness-build-skill` 的 `harness-from-profile` skill。
+
+## 决策与设计
+
+- ADR：`docs/design-docs/adr/`。
+- 产品 spec：`docs/product-specs/`。
+
+## 工具链
+
+- **Issue tracker**：Jira `{{ jira_site_url }}`（key `{{ jira_project_key or '<填 Jira key>' }}`）+ 本地 atlassian MCP。
+- **质量门**：SonarCloud + Snyk。
+- **spec-driven**：openspec CLI（根 `openspec/`）。
+- **AI CLI**：claude / opencode / codex。
+- **agent roster**：`jadephong/agency-agents-zh`（各 agent 对应任务类型）。
+- **Skill 路由**：`docs/references/skill-routing.md`（按场景选 skill 的速查表）。
+- **代码图谱**：codegraph MCP（已索引本仓，`codegraph_explore` 优先于 grep+read）。
+
+## 内部 dev 工具
+
+- autoharness：本仓库 `harness/`（与产品分离）。
